@@ -1,6 +1,6 @@
 /*
 ish ish protocol
-inviter (a), candidate (b)
+member (a), candidate (b)
 
 1) a sends b an invite out of band, random-key=r, invite={r.publicKey}
 2) b uses the invite to generate the topic, keyPair(r.publicKey + 'protopair')
@@ -42,17 +42,17 @@ class TimeoutPromise {
     this.resolve = null
     this.timeout = null
 
-    this._resolveBound = this._resolve.bind(this, true)
+    this._resolveBound = this._resolve.bind(this)
     this._ontimerBound = this._ontimer.bind(this)
   }
 
   wait () {
-    if (this.timeout) this._resolve(false)
+    if (this.timeout) this._resolve()
     return new Promise(this._ontimerBound)
   }
 
   destroy () {
-    this._resolve(false)
+    if (this.resolve) this._resolve(false)
   }
 
   _ontimer (resolve) {
@@ -60,22 +60,22 @@ class TimeoutPromise {
     this.timeout = setTimeout(this._resolveBound, this.ms)
   }
 
-  _resolve (bool) {
+  _resolve () {
     clearTimeout(this.timeout)
 
     const resolve = this.resolve
     this.timeout = null
     this.resolve = null
 
-    resolve(bool)
+    resolve()
   }
 }
 
-class Inviter extends ReadyResource {
+class Member extends ReadyResource {
   constructor (dht, { invite, id = getReceipt(invite), topic = getTopic(id), onadd = noop }) {
     super()
 
-    const pollTime = (5000 * 1.5 * Math.random()) | 0
+    const pollTime = 5000 + (5000 * 0.5 * Math.random()) | 0
 
     this.dht = dht
     this.id = id
@@ -141,24 +141,27 @@ class Inviter extends ReadyResource {
 
     const replyKeyPair = getReplyKeyPair(this.id, key)
     await this.dht.mutablePut(replyKeyPair, blind(secret, getReplyBlindingKey(this.id, key)))
+
     return true
   }
 }
 
 class Candidate extends ReadyResource {
-  constructor (dht, { key, invite, id = getReceipt(invite), topic = getTopic(id), onadd = noop }) {
+  constructor (dht, { key, invite, seed = crypto.randomBytes(32), id = getReceipt(invite), topic = getTopic(id), onadd = noop }) {
     super()
 
-    const pollTime = (5000 * 1.5 * Math.random()) | 0
+    const pollTime = 5000 + (5000 * 0.5 * Math.random()) | 0
 
     this.dht = dht
     this.key = key
+    this.seed = seed
     this.invite = invite
     this.id = id
     this.blindingKey = deriveBlindingKey(this.id)
     this.topic = topic
     this.timeout = new TimeoutPromise(pollTime)
     this.started = null
+    this.gcing = null
     this.onadd = onadd
   }
 
@@ -167,12 +170,18 @@ class Candidate extends ReadyResource {
     return this.started
   }
 
+  _gcBackground () {
+    if (!this.gcing) this.gcing = this.gc()
+  }
+
   _open () {
     if (this.started === null) this.start().catch(safetyCatch)
   }
 
-  _close () {
+  async _close () {
     this.timeout.destroy()
+    this._gcBackground()
+    await this.gcing
   }
 
   async _start () {
@@ -181,6 +190,7 @@ class Candidate extends ReadyResource {
     while (!this.closing) {
       const reply = await this.poll()
       if (reply) {
+        this._gcBackground()
         await this.onadd(reply)
         return reply
       }
@@ -192,7 +202,7 @@ class Candidate extends ReadyResource {
   }
 
   async announce () {
-    const eph = crypto.keyPair(this.key)
+    const eph = deriveEphemeralKeyPair(this.id, this.key, this.seed)
 
     // TODO: ask chm-diederichs if the signature is fully determisticly generated (requirement here for the throwaway)
     const signature = crypto.sign(this.key, this.invite)
@@ -201,6 +211,16 @@ class Candidate extends ReadyResource {
 
     await this.dht.mutablePut(eph, blindedMsg)
     await this.dht.announce(this.topic, eph).finished()
+  }
+
+  async gc () {
+    const eph = deriveEphemeralKeyPair(this.id, this.key, this.seed)
+
+    try {
+      await this.dht.unannounce(this.topic, eph)
+    } catch (err) {
+      safetyCatch(err) // just gc, whatevs
+    }
   }
 
   async poll () {
@@ -213,7 +233,7 @@ class Candidate extends ReadyResource {
 }
 
 module.exports = {
-  Inviter,
+  Member,
   Candidate,
   generateInvite
 }
@@ -251,6 +271,10 @@ function getReplyBlindingKey (id, memberKey) {
 
 function deriveBlindingKey (id) {
   return crypto.hash([id, Buffer.from('invite-encryption-key')])
+}
+
+function deriveEphemeralKeyPair (id, memberKey, seed) {
+  return crypto.keyPair(crypto.hash([id, memberKey, seed, Buffer.from('invite-ephemeral-key-pair')]))
 }
 
 function blind (msg, secretKey) {
