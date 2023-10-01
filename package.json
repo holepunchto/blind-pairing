@@ -1,0 +1,19 @@
+{
+  "name": "@holepunchto/blind-pairing",
+  "version": "0.0.0",
+  "description": "Blind pairing using HyperDHT",
+  "main": "index.js",
+  "dependencies": {
+    "hyperdht": "^6.7.0"
+  },
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/holepunchto/blind-pairing.git"
+  },
+  "author": "Holepunch Inc",
+  "license": "Apache-2.0",
+  "bugs": {
+    "url": "https://github.com/holepunchto/blind-pairing/issues"
+  },
+  "homepage": "https://github.com/holepunchto/blind-pairing"
+}
