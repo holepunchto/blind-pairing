@@ -18,20 +18,44 @@ const b4a = require('b4a')
 const safetyCatch = require('safety-catch')
 const c = require('compact-encoding')
 const ReadyResource = require('ready-resource')
+const Xache = require('xache')
 
 const Proof = {
   preencode (state, m) {
+    c.fixed32.preencode(state, m.id)
     c.fixed32.preencode(state, m.key)
     c.fixed64.preencode(state, m.signature)
   },
   encode (state, m) {
+    c.fixed32.encode(state, m.id)
     c.fixed32.encode(state, m.key)
     c.fixed64.encode(state, m.signature)
   },
   decode (state) {
     return {
+      id: c.fixed32.decode(state),
       key: c.fixed32.decode(state),
       signature: c.fixed64.decode(state)
+    }
+  }
+}
+
+const Result = {
+  preencode (state, m) {
+    state.end++ // flags
+    c.fixed32.preencode(state, m.key)
+    if (m.encryptionKey) c.fixed32.preencode(state, m.encryptionKey)
+  },
+  encode (state, m) {
+    c.uint.encode(state, m.encryptionKey ? 1 : 0)
+    c.fixed32.encode(state, m.key)
+    if (m.encryptionKey) c.fixed32.encode(state, m.encryptionKey)
+  },
+  decode (state) {
+    const flags = c.uint.decode(state)
+    return {
+      key: c.fixed32.decode(state),
+      encryptionKey: (flags & 1) !== 0 ? c.fixed32.decode(state) : null
     }
   }
 }
@@ -84,6 +108,7 @@ class Member extends ReadyResource {
     this.timeout = new TimeoutPromise(pollTime)
     this.started = null
     this.onadd = onadd
+    this.skip = new Xache({ maxSize: 512 })
 
     this.ready()
   }
@@ -115,11 +140,11 @@ class Member extends ReadyResource {
       for (const peer of data.peers) {
         const id = b4a.toString(peer.publicKey, 'hex')
 
-        if (visited.has(id)) continue
+        if (visited.has(id) || this.skip.get(id)) continue
         visited.add(id)
 
         try {
-          await this._add(peer.publicKey)
+          await this._add(peer.publicKey, id)
         } catch (err) {
           safetyCatch(err)
         }
@@ -127,20 +152,27 @@ class Member extends ReadyResource {
     }
   }
 
-  async _add (publicKey) {
+  async _add (publicKey, id) {
     const node = await this.dht.mutableGet(publicKey, { latest: false })
     if (!node) return false
 
+    this.skip.set(id, true)
+
     const msg = blindThrowaway(node.value, this.blindingKey, publicKey)
-    const { key, signature } = c.decode(Proof, msg)
+    const candidate = c.decode(Proof, msg)
 
-    if (!crypto.verify(key, signature, this.id)) return false
+    if (!verifyInvite(candidate)) {
+      return false
+    }
 
-    const secret = await this.onadd(key)
-    if (!secret) return false
+    const result = await this.onadd(candidate)
+    if (!result) {
+      return false
+    }
 
-    const replyKeyPair = getReplyKeyPair(this.id, key)
-    await this.dht.mutablePut(replyKeyPair, blind(secret, getReplyBlindingKey(this.id, key)))
+    const buf = c.encode(Result, result)
+    const replyKeyPair = getReplyKeyPair(candidate.id, candidate.key)
+    await this.dht.mutablePut(replyKeyPair, blind(buf, getReplyBlindingKey(candidate.id, candidate.key)))
 
     return true
   }
@@ -206,7 +238,8 @@ class Candidate extends ReadyResource {
 
     // TODO: ask chm-diederichs if the signature is fully determisticly generated (requirement here for the throwaway)
     const signature = crypto.sign(this.key, this.invite)
-    const msg = c.encode(Proof, { key: this.key, signature })
+    const msg = c.encode(Proof, { id: this.id, key: this.key, signature })
+
     const blindedMsg = blindThrowaway(msg, this.blindingKey, eph.publicKey)
 
     await this.dht.mutablePut(eph, blindedMsg)
@@ -228,57 +261,64 @@ class Candidate extends ReadyResource {
     const node = await this.dht.mutableGet(replyKeyPair.publicKey, { latest: false })
     if (!node) return null
 
-    return unblind(node.value, getReplyBlindingKey(this.id, this.key))
+    const buf = unblind(node.value, getReplyBlindingKey(this.id, this.key))
+    return c.decode(Result, buf)
   }
 }
 
 module.exports = {
   Member,
   Candidate,
-  generateInvite
+  generateInvite,
+  verifyInvite
 }
 
-function generateInvite () {
+function verifyInvite (candidate) {
+  return crypto.verify(candidate.key, candidate.signature, candidate.id)
+}
+
+function generateInvite ({ expires = 0, app = null } = {}) {
   const kp = crypto.keyPair()
 
   return {
     version: 1,
     invite: kp.secretKey,
-    id: kp.publicKey
+    id: kp.publicKey,
+    expires
   }
 }
 
 function noop () {}
 
 function getTopic (id) {
-  return crypto.hash([id, Buffer.from('invite-topic')])
+  return crypto.hash([id, b4a.from('invite-topic')])
 }
 
 function getReceipt (invite) {
-  const publicKey = Buffer.allocUnsafe(32)
+  const publicKey = b4a.allocUnsafe(32)
   sodium.crypto_sign_ed25519_sk_to_pk(publicKey, invite)
   return publicKey
 }
 
 function getReplyKeyPair (id, memberKey) {
-  const replySeed = crypto.hash([id, memberKey, Buffer.from('invite-reply')])
+  const replySeed = crypto.hash([id, memberKey, b4a.from('invite-reply')])
   return crypto.keyPair(replySeed)
 }
 
 function getReplyBlindingKey (id, memberKey) {
-  return crypto.hash([id, memberKey, Buffer.from('invite-reply-blinding-key')])
+  return crypto.hash([id, memberKey, b4a.from('invite-reply-blinding-key')])
 }
 
 function deriveBlindingKey (id) {
-  return crypto.hash([id, Buffer.from('invite-encryption-key')])
+  return crypto.hash([id, b4a.from('invite-encryption-key')])
 }
 
 function deriveEphemeralKeyPair (id, memberKey, seed) {
-  return crypto.keyPair(crypto.hash([id, memberKey, seed, Buffer.from('invite-ephemeral-key-pair')]))
+  return crypto.keyPair(crypto.hash([id, memberKey, seed, b4a.from('invite-ephemeral-key-pair')]))
 }
 
 function blind (msg, secretKey) {
-  const result = Buffer.allocUnsafe(msg.byteLength + sodium.crypto_stream_NONCEBYTES)
+  const result = b4a.allocUnsafe(msg.byteLength + sodium.crypto_stream_NONCEBYTES)
   const nonce = result.subarray(0, sodium.crypto_stream_NONCEBYTES)
   const cipher = result.subarray(nonce.byteLength)
 
@@ -291,7 +331,7 @@ function blind (msg, secretKey) {
 function unblind (result, secretKey) {
   const nonce = result.subarray(0, sodium.crypto_stream_NONCEBYTES)
   const cipher = result.subarray(nonce.byteLength)
-  const msg = Buffer.allocUnsafe(cipher.byteLength)
+  const msg = b4a.allocUnsafe(cipher.byteLength)
 
   sodium.crypto_stream_xor(msg, cipher, nonce, secretKey)
 
@@ -300,7 +340,7 @@ function unblind (result, secretKey) {
 
 function blindThrowaway (msg, blindingKey, publicKey) {
   const nonce = publicKey.subarray(0, sodium.crypto_stream_NONCEBYTES)
-  const cipher = Buffer.allocUnsafe(msg.byteLength)
+  const cipher = b4a.allocUnsafe(msg.byteLength)
 
   sodium.crypto_stream_xor(cipher, msg, nonce, blindingKey)
 
