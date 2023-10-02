@@ -145,7 +145,7 @@ class Candidate extends ReadyResource {
 
     this.dht = dht
     this.request = request
-    this.key = request.keyPair.publicKey
+    this.key = request.userData
     this.topic = topic
     this.timeout = new TimeoutPromise(pollTime)
     this.started = null
