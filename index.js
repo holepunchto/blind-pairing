@@ -62,6 +62,7 @@ class Member extends ReadyResource {
 
     this.dht = dht
     this.topic = topic
+    this.invite = invite
     this.timeout = new TimeoutPromise(pollTime)
     this.started = null
     this.onadd = onadd
@@ -118,6 +119,7 @@ class Member extends ReadyResource {
     let request = null
     try {
       request = MemberRequest.from(node.value)
+      request.open(this.invite.publicKey)
     } catch {
       return false
     }
