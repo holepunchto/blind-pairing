@@ -1,6 +1,6 @@
 {
   "name": "@holepunchto/blind-pairing",
-  "version": "0.0.1",
+  "version": "0.0.2",
   "description": "Blind pairing using HyperDHT",
   "main": "index.js",
   "dependencies": {
