@@ -5,11 +5,10 @@
   "main": "index.js",
   "dependencies": {
     "b4a": "^1.6.4",
-    "compact-encoding": "^2.12.0",
     "hypercore-crypto": "^3.4.0",
+    "keet-pairing-core": "github:holepunchto/keet-pairing-core",
     "ready-resource": "^1.0.0",
     "safety-catch": "^1.0.2",
-    "sodium-native": "^4.0.4",
     "xache": "^1.2.0"
   },
   "devDependencies": {
