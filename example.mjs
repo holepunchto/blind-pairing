@@ -29,7 +29,8 @@ const b = new Candidate(new DHT({ bootstrap: t.bootstrap }), request, {
 })
 
 console.time('paired')
-const recv = await b.start()
+b.start()
+await new Promise(resolve => request.on('accepted', resolve))
 console.timeEnd('paired')
 
 await a.close()

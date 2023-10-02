@@ -12,7 +12,12 @@
     "xache": "^1.2.0"
   },
   "devDependencies": {
-    "hyperdht": "^6.7.0"
+    "brittle": "^3.3.2",
+    "hyperdht": "^6.7.0",
+    "standard": "^17.1.0"
+  },
+  "scripts": {
+    "test": "standard && brittle test/*.js"
   },
   "repository": {
     "type": "git",
