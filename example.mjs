@@ -1,27 +1,28 @@
 import DHT from 'hyperdht'
 import createTestnet from 'hyperdht/testnet.js'
-import { Member, Candidate, generateInvite } from './index.js'
+import { CandidateRequest, createInvite } from 'keet-pairing-core'
+import { Member, Candidate } from './index.js'
 
-// const t = await createTestnet()
+const t = await createTestnet()
 const autobaseKey = Buffer.alloc(32).fill('the-autobase-key')
 
-const { invite, id } = generateInvite()
+const { invite, id, publicKey } = createInvite(autobaseKey)
 
 console.log(invite, id)
 
 console.log('spin up member')
-const a = new Member(new DHT(), {
-  id,
-  async onadd (candiate) {
-    console.log('add candidate:', candiate)
-    return { key: autobaseKey, encryptionKey: null }
+const a = new Member(new DHT({ bootstrap: t.bootstrap }), {
+  invite: { id, publicKey },
+  async onadd (candidate) {
+    console.log('add candidate:', candidate)
+    candidate.confirm(autobaseKey)
   }
 })
 
-console.log('spin up candidate')
-const b = new Candidate(new DHT(), {
-  key: Buffer.alloc(32).fill('i am a candidate'),
-  invite,
+const userData = Buffer.alloc(32).fill('i am a candidate')
+const request = new CandidateRequest(invite, userData)
+
+const b = new Candidate(new DHT({ bootstrap: t.bootstrap }), request, {
   async onadd (result) {
     console.log('got the result!', result)
   }
