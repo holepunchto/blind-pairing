@@ -270,7 +270,8 @@ module.exports = {
   Member,
   Candidate,
   generateInvite,
-  verifyInvite
+  verifyInvite,
+  getReceipt
 }
 
 function verifyInvite (candidate) {
