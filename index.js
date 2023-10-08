@@ -12,53 +12,12 @@ member (a), candidate (b)
 4) b polls the reply keypair, on new entry it checks the validity and the pairing is done
 */
 
-const sodium = require('sodium-native')
 const crypto = require('hypercore-crypto')
 const b4a = require('b4a')
 const safetyCatch = require('safety-catch')
-const c = require('compact-encoding')
 const ReadyResource = require('ready-resource')
 const Xache = require('xache')
-
-const Proof = {
-  preencode (state, m) {
-    c.fixed32.preencode(state, m.id)
-    c.fixed32.preencode(state, m.key)
-    c.fixed64.preencode(state, m.signature)
-  },
-  encode (state, m) {
-    c.fixed32.encode(state, m.id)
-    c.fixed32.encode(state, m.key)
-    c.fixed64.encode(state, m.signature)
-  },
-  decode (state) {
-    return {
-      id: c.fixed32.decode(state),
-      key: c.fixed32.decode(state),
-      signature: c.fixed64.decode(state)
-    }
-  }
-}
-
-const Result = {
-  preencode (state, m) {
-    state.end++ // flags
-    c.fixed32.preencode(state, m.key)
-    if (m.encryptionKey) c.fixed32.preencode(state, m.encryptionKey)
-  },
-  encode (state, m) {
-    c.uint.encode(state, m.encryptionKey ? 1 : 0)
-    c.fixed32.encode(state, m.key)
-    if (m.encryptionKey) c.fixed32.encode(state, m.encryptionKey)
-  },
-  decode (state) {
-    const flags = c.uint.decode(state)
-    return {
-      key: c.fixed32.decode(state),
-      encryptionKey: (flags & 1) !== 0 ? c.fixed32.decode(state) : null
-    }
-  }
-}
+const { MemberRequest, createInvite } = require('keet-pairing-core')
 
 class TimeoutPromise {
   constructor (ms) {
@@ -96,15 +55,14 @@ class TimeoutPromise {
 }
 
 class Member extends ReadyResource {
-  constructor (dht, { invite, id = getReceipt(invite), topic = getTopic(id), onadd = noop }) {
+  constructor (dht, { invite, topic = getTopic(invite.id), onadd = noop }) {
     super()
 
     const pollTime = 5000 + (5000 * 0.5 * Math.random()) | 0
 
     this.dht = dht
-    this.id = id
-    this.blindingKey = deriveBlindingKey(this.id)
     this.topic = topic
+    this.invite = invite
     this.timeout = new TimeoutPromise(pollTime)
     this.started = null
     this.onadd = onadd
@@ -158,38 +116,36 @@ class Member extends ReadyResource {
 
     this.skip.set(id, true)
 
-    const msg = blindThrowaway(node.value, this.blindingKey, publicKey)
-    const candidate = c.decode(Proof, msg)
-
-    if (!verifyInvite(candidate)) {
+    let request = null
+    try {
+      request = MemberRequest.from(node.value)
+      request.open(this.invite.publicKey)
+    } catch {
       return false
     }
 
-    const result = await this.onadd(candidate)
-    if (!result) {
-      return false
+    await this.onadd(request)
+    if (!request.response) {
+      return false // should we post deny?
     }
 
-    const buf = c.encode(Result, result)
-    const replyKeyPair = getReplyKeyPair(candidate.id, candidate.key)
-    await this.dht.mutablePut(replyKeyPair, blind(buf, getReplyBlindingKey(candidate.id, candidate.key)))
+    const replyKeyPair = getReplyKeyPair(request.token)
+    await this.dht.mutablePut(replyKeyPair, request.response)
 
     return true
   }
 }
 
+// request should be keetPairing.CandidateRequest
 class Candidate extends ReadyResource {
-  constructor (dht, { key, invite, seed = crypto.randomBytes(32), id = getReceipt(invite), topic = getTopic(id), onadd = noop }) {
+  constructor (dht, request, { topic = getTopic(request.id), onadd = noop }) {
     super()
 
     const pollTime = 5000 + (5000 * 0.5 * Math.random()) | 0
 
     this.dht = dht
-    this.key = key
-    this.seed = seed
-    this.invite = invite
-    this.id = id
-    this.blindingKey = deriveBlindingKey(this.id)
+    this.request = request
+    this.key = request.userData
     this.topic = topic
     this.timeout = new TimeoutPromise(pollTime)
     this.started = null
@@ -234,20 +190,14 @@ class Candidate extends ReadyResource {
   }
 
   async announce () {
-    const eph = deriveEphemeralKeyPair(this.id, this.key, this.seed)
+    const eph = deriveEphemeralKeyPair(this.key, this.request.seed)
 
-    // TODO: ask chm-diederichs if the signature is fully determisticly generated (requirement here for the throwaway)
-    const signature = crypto.sign(this.key, this.invite)
-    const msg = c.encode(Proof, { id: this.id, key: this.key, signature })
-
-    const blindedMsg = blindThrowaway(msg, this.blindingKey, eph.publicKey)
-
-    await this.dht.mutablePut(eph, blindedMsg)
+    await this.dht.mutablePut(eph, this.request.encode())
     await this.dht.announce(this.topic, eph).finished()
   }
 
   async gc () {
-    const eph = deriveEphemeralKeyPair(this.id, this.key, this.seed)
+    const eph = deriveEphemeralKeyPair(this.key, this.request.seed)
 
     try {
       await this.dht.unannounce(this.topic, eph)
@@ -257,35 +207,18 @@ class Candidate extends ReadyResource {
   }
 
   async poll () {
-    const replyKeyPair = getReplyKeyPair(this.id, this.key)
-    const node = await this.dht.mutableGet(replyKeyPair.publicKey, { latest: false })
+    const { publicKey } = getReplyKeyPair(this.request.token)
+    const node = await this.dht.mutableGet(publicKey, { latest: false })
     if (!node) return null
 
-    const buf = unblind(node.value, getReplyBlindingKey(this.id, this.key))
-    return c.decode(Result, buf)
+    return this.request.handleResponse(node.value)
   }
 }
 
 module.exports = {
   Member,
   Candidate,
-  generateInvite,
-  verifyInvite
-}
-
-function verifyInvite (candidate) {
-  return crypto.verify(candidate.key, candidate.signature, candidate.id)
-}
-
-function generateInvite ({ expires = 0, app = null } = {}) {
-  const kp = crypto.keyPair()
-
-  return {
-    version: 1,
-    invite: kp.secretKey,
-    id: kp.publicKey,
-    expires
-  }
+  createInvite
 }
 
 function noop () {}
@@ -294,55 +227,11 @@ function getTopic (id) {
   return crypto.hash([id, b4a.from('invite-topic')])
 }
 
-function getReceipt (invite) {
-  const publicKey = b4a.allocUnsafe(32)
-  sodium.crypto_sign_ed25519_sk_to_pk(publicKey, invite)
-  return publicKey
-}
-
-function getReplyKeyPair (id, memberKey) {
-  const replySeed = crypto.hash([id, memberKey, b4a.from('invite-reply')])
+function getReplyKeyPair (token) {
+  const replySeed = crypto.hash([token, b4a.from('invite-reply')])
   return crypto.keyPair(replySeed)
 }
 
-function getReplyBlindingKey (id, memberKey) {
-  return crypto.hash([id, memberKey, b4a.from('invite-reply-blinding-key')])
-}
-
-function deriveBlindingKey (id) {
-  return crypto.hash([id, b4a.from('invite-encryption-key')])
-}
-
-function deriveEphemeralKeyPair (id, memberKey, seed) {
-  return crypto.keyPair(crypto.hash([id, memberKey, seed, b4a.from('invite-ephemeral-key-pair')]))
-}
-
-function blind (msg, secretKey) {
-  const result = b4a.allocUnsafe(msg.byteLength + sodium.crypto_stream_NONCEBYTES)
-  const nonce = result.subarray(0, sodium.crypto_stream_NONCEBYTES)
-  const cipher = result.subarray(nonce.byteLength)
-
-  sodium.randombytes_buf(nonce)
-  sodium.crypto_stream_xor(cipher, msg, nonce, secretKey)
-
-  return result
-}
-
-function unblind (result, secretKey) {
-  const nonce = result.subarray(0, sodium.crypto_stream_NONCEBYTES)
-  const cipher = result.subarray(nonce.byteLength)
-  const msg = b4a.allocUnsafe(cipher.byteLength)
-
-  sodium.crypto_stream_xor(msg, cipher, nonce, secretKey)
-
-  return msg
-}
-
-function blindThrowaway (msg, blindingKey, publicKey) {
-  const nonce = publicKey.subarray(0, sodium.crypto_stream_NONCEBYTES)
-  const cipher = b4a.allocUnsafe(msg.byteLength)
-
-  sodium.crypto_stream_xor(cipher, msg, nonce, blindingKey)
-
-  return cipher
+function deriveEphemeralKeyPair (memberKey, seed) {
+  return crypto.keyPair(crypto.hash([memberKey, seed, b4a.from('invite-ephemeral-key-pair')]))
 }
