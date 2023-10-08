@@ -1,5 +1,5 @@
-import DHT from 'hyperdht'
 import createTestnet from 'hyperdht/testnet.js'
+import Hyperswarm from 'hyperswarm'
 import { CandidateRequest, createInvite } from '@holepunchto/blind-pairing-core'
 import { Member, Candidate } from './index.js'
 
@@ -9,7 +9,7 @@ const autobaseKey = Buffer.alloc(32).fill('the-autobase-key')
 const { invite, publicKey, discoveryKey } = createInvite(autobaseKey)
 
 console.log('spin up member')
-const a = new Member(new DHT({ bootstrap: t.bootstrap }), {
+const a = new Member(new Hyperswarm({ bootstrap: t.bootstrap }), {
   poll: 5000,
   topic: discoveryKey,
   async onadd (candidate) {
@@ -23,7 +23,7 @@ const a = new Member(new DHT({ bootstrap: t.bootstrap }), {
 const userData = Buffer.alloc(32).fill('i am a candidate')
 const request = new CandidateRequest(invite, userData)
 
-const b = new Candidate(new DHT({ bootstrap: t.bootstrap }), request, {
+const b = new Candidate(new Hyperswarm({ bootstrap: t.bootstrap }), request, {
   poll: 5000,
   async onadd (result) {
     console.log('got the result!', result)

@@ -57,13 +57,13 @@ class TimeoutPromise {
 }
 
 class Member extends ReadyResource {
-  constructor (dht, { poll = DEFAULT_POLL, invite, topic = invite && (invite.discoveryKey || getTopic(invite.id)), onadd = noop }) {
+  constructor (swarm, { poll = DEFAULT_POLL, invite, topic = invite && (invite.discoveryKey || getTopic(invite.id)), onadd = noop }) {
     if (!topic) throw new Error('Topic must be provided')
     super()
 
     const randomizedPollTime = poll + (poll * 0.5 * Math.random()) | 0
 
-    this.dht = dht
+    this.dht = swarm.dht
     this.topic = topic
     this.timeout = new TimeoutPromise(randomizedPollTime)
     this.started = null
@@ -145,12 +145,12 @@ class Member extends ReadyResource {
 
 // request should be keetPairing.CandidateRequest
 class Candidate extends ReadyResource {
-  constructor (dht, request, { poll = DEFAULT_POLL, topic = (request.discoveryKey || getTopic(request.id)), onadd = noop } = {}) {
+  constructor (swarm, request, { poll = DEFAULT_POLL, topic = (request.discoveryKey || getTopic(request.id)), onadd = noop } = {}) {
     super()
 
     const randomizedPollTime = poll + (poll * 0.5 * Math.random()) | 0
 
-    this.dht = dht
+    this.dht = swarm.dht
     this.request = request
     this.key = request.userData
     this.topic = topic
