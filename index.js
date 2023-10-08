@@ -19,6 +19,8 @@ const ReadyResource = require('ready-resource')
 const Xache = require('xache')
 const { MemberRequest, createInvite } = require('@holepunchto/blind-pairing-core')
 
+const DEFAULT_POLL = 7 * 60 * 1000
+
 class TimeoutPromise {
   constructor (ms) {
     this.ms = ms
@@ -55,11 +57,11 @@ class TimeoutPromise {
 }
 
 class Member extends ReadyResource {
-  constructor (dht, { pollTime = 5000, invite, topic = invite && (invite.discoveryKey || getTopic(invite.id)), onadd = noop }) {
+  constructor (dht, { poll = DEFAULT_POLL, invite, topic = invite && (invite.discoveryKey || getTopic(invite.id)), onadd = noop }) {
     if (!topic) throw new Error('Topic must be provided')
     super()
 
-    const randomizedPollTime = pollTime + (pollTime * 0.5 * Math.random()) | 0
+    const randomizedPollTime = poll + (poll * 0.5 * Math.random()) | 0
 
     this.dht = dht
     this.topic = topic
@@ -143,10 +145,10 @@ class Member extends ReadyResource {
 
 // request should be keetPairing.CandidateRequest
 class Candidate extends ReadyResource {
-  constructor (dht, request, { pollTime = 5000, topic = (request.discoveryKey || getTopic(request.id)), onadd = noop } = {}) {
+  constructor (dht, request, { poll = DEFAULT_POLL, topic = (request.discoveryKey || getTopic(request.id)), onadd = noop } = {}) {
     super()
 
-    const randomizedPollTime = pollTime + (pollTime * 0.5 * Math.random()) | 0
+    const randomizedPollTime = poll + (poll * 0.5 * Math.random()) | 0
 
     this.dht = dht
     this.request = request
@@ -178,7 +180,7 @@ class Candidate extends ReadyResource {
   }
 
   async _start () {
-    await this.announce()
+    let announced = false
 
     while (!this.closing) {
       const reply = await this.poll()
@@ -186,6 +188,10 @@ class Candidate extends ReadyResource {
         this._gcBackground()
         await this.onadd(reply)
         return reply
+      }
+      if (!announced) {
+        await this.announce()
+        announced = true
       }
 
       await this.timeout.wait()

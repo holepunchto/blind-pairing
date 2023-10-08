@@ -10,6 +10,7 @@ const { invite, publicKey, discoveryKey } = createInvite(autobaseKey)
 
 console.log('spin up member')
 const a = new Member(new DHT({ bootstrap: t.bootstrap }), {
+  poll: 5000,
   topic: discoveryKey,
   async onadd (candidate) {
     console.log('candiate id is', candidate.id)
@@ -23,6 +24,7 @@ const userData = Buffer.alloc(32).fill('i am a candidate')
 const request = new CandidateRequest(invite, userData)
 
 const b = new Candidate(new DHT({ bootstrap: t.bootstrap }), request, {
+  poll: 5000,
   async onadd (result) {
     console.log('got the result!', result)
   }
@@ -32,6 +34,7 @@ console.time('paired')
 b.start()
 await new Promise(resolve => request.on('accepted', resolve))
 console.timeEnd('paired')
+console.log('paired:', request.auth)
 
 await a.close()
 await b.close()
