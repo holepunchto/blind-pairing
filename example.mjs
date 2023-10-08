@@ -1,21 +1,21 @@
 import DHT from 'hyperdht'
 import createTestnet from 'hyperdht/testnet.js'
-import { CandidateRequest, createInvite } from 'keet-pairing-core'
+import { CandidateRequest, createInvite } from '@holepunchto/blind-pairing-core'
 import { Member, Candidate } from './index.js'
 
 const t = await createTestnet()
 const autobaseKey = Buffer.alloc(32).fill('the-autobase-key')
 
-const { invite, id, publicKey } = createInvite(autobaseKey)
-
-console.log(invite, id)
+const { invite, id, publicKey, discoveryKey } = createInvite(autobaseKey)
 
 console.log('spin up member')
 const a = new Member(new DHT({ bootstrap: t.bootstrap }), {
-  invite: { id, publicKey },
+  topic: discoveryKey,
   async onadd (candidate) {
-    console.log('add candidate:', candidate)
-    candidate.confirm(autobaseKey)
+    console.log('candiate id is', candidate.id)
+    candidate.open(publicKey)
+    console.log('add candidate:', candidate.userData)
+    candidate.confirm({ key: autobaseKey })
   }
 })
 

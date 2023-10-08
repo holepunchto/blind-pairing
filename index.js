@@ -17,7 +17,7 @@ const b4a = require('b4a')
 const safetyCatch = require('safety-catch')
 const ReadyResource = require('ready-resource')
 const Xache = require('xache')
-const { MemberRequest, createInvite } = require('keet-pairing-core')
+const { MemberRequest, createInvite } = require('@holepunchto/blind-pairing-core')
 
 class TimeoutPromise {
   constructor (ms) {
@@ -55,14 +55,14 @@ class TimeoutPromise {
 }
 
 class Member extends ReadyResource {
-  constructor (dht, { invite, topic = getTopic(invite.id), onadd = noop }) {
+  constructor (dht, { invite, topic = invite && (invite.discoveryKey || getTopic(invite.id)), onadd = noop }) {
+    if (!topic) throw new Error('Topic must be provided')
     super()
 
     const pollTime = 5000 + (5000 * 0.5 * Math.random()) | 0
 
     this.dht = dht
     this.topic = topic
-    this.invite = invite
     this.timeout = new TimeoutPromise(pollTime)
     this.started = null
     this.onadd = onadd
@@ -119,12 +119,17 @@ class Member extends ReadyResource {
     let request = null
     try {
       request = MemberRequest.from(node.value)
-      request.open(this.invite.publicKey)
     } catch {
       return false
     }
 
-    await this.onadd(request)
+    try {
+      await this.onadd(request)
+    } catch (e) {
+      safetyCatch(e)
+      return false
+    }
+
     if (!request.response) {
       return false // should we post deny?
     }
@@ -138,7 +143,7 @@ class Member extends ReadyResource {
 
 // request should be keetPairing.CandidateRequest
 class Candidate extends ReadyResource {
-  constructor (dht, request, { topic = getTopic(request.id), onadd = noop }) {
+  constructor (dht, request, { topic = (request.discoveryKey || getTopic(request.id)), onadd = noop } = {}) {
     super()
 
     const pollTime = 5000 + (5000 * 0.5 * Math.random()) | 0

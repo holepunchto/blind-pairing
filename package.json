@@ -6,7 +6,7 @@
   "dependencies": {
     "b4a": "^1.6.4",
     "hypercore-crypto": "^3.4.0",
-    "keet-pairing-core": "github:holepunchto/keet-pairing-core",
+    "@holepunchto/blind-pairing-core": "^0.0.0",
     "ready-resource": "^1.0.0",
     "safety-catch": "^1.0.2",
     "xache": "^1.2.0"
