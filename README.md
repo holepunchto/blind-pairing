@@ -17,7 +17,7 @@ import { Member, Candidate } from './index.js'
 const t = await createTestnet()
 const autobaseKey = Buffer.alloc(32).fill('the-autobase-key')
 
-const { invite, id, publicKey, discoveryKey } = createInvite(autobaseKey)
+const { invite, publicKey, discoveryKey } = createInvite(autobaseKey)
 
 console.log('spin up member')
 const a = new Member(new DHT({ bootstrap: t.bootstrap }), {
