@@ -9,27 +9,48 @@ npm install @holepunchto/blind-pairing
 ## Usage
 
 ``` js
-const { Member, Candidate, generateInvite } = require('@holepunchto/blind-pairing')
+import DHT from 'hyperdht'
+import createTestnet from 'hyperdht/testnet.js'
+import { CandidateRequest, createInvite } from '@holepunchto/blind-pairing-core'
+import { Member, Candidate } from './index.js'
 
-const { invite, id } = generateInvite()
+const t = await createTestnet()
+const autobaseKey = Buffer.alloc(32).fill('the-autobase-key')
 
-const m = new Member(dht, {
-  id,
-  async onadd (key) {
-    return secret
+const { invite, id, publicKey, discoveryKey } = createInvite(autobaseKey)
+
+console.log('spin up member')
+const a = new Member(new DHT({ bootstrap: t.bootstrap }), {
+  topic: discoveryKey,
+  async onadd (candidate) {
+    console.log('candiate id is', candidate.id)
+    candidate.open(publicKey)
+    console.log('add candidate:', candidate.userData)
+    candidate.confirm({ key: autobaseKey })
   }
 })
 
-const c = new Candidate(dht, {
-  invite,
-  async onadd (secret) {
-    console.log('we were told we were added')
+const userData = Buffer.alloc(32).fill('i am a candidate')
+const request = new CandidateRequest(invite, userData)
+
+const b = new Candidate(new DHT({ bootstrap: t.bootstrap }), request, {
+  async onadd (result) {
+    console.log('got the result!', result)
   }
 })
 
-c.start()
+console.time('paired')
+b.start()
+await new Promise(resolve => request.on('accepted', resolve))
+console.timeEnd('paired')
+
+await a.close()
+await b.close()
+
+await a.dht.destroy()
+await b.dht.destroy()
 ```
 
 ## License
 
-MIT
+Apache-2.0
