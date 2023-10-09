@@ -26,17 +26,21 @@ class TimeoutPromise {
     this.ms = ms
     this.resolve = null
     this.timeout = null
+    this.destroyed = false
 
     this._resolveBound = this._resolve.bind(this)
     this._ontimerBound = this._ontimer.bind(this)
   }
 
   wait () {
+    if (this.destroyed) return Promise.resolve()
+
     if (this.timeout) this._resolve()
     return new Promise(this._ontimerBound)
   }
 
   destroy () {
+    this.destroyed = true
     if (this.resolve) this._resolve(false)
   }
 
