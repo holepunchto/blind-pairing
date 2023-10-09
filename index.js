@@ -3,7 +3,7 @@ const b4a = require('b4a')
 const safetyCatch = require('safety-catch')
 const ReadyResource = require('ready-resource')
 const Xache = require('xache')
-const { MemberRequest, CandidateRequest, createInvite } = require('@holepunchto/blind-pairing-core')
+const { MemberRequest, CandidateRequest, createInvite, decodeInvite } = require('@holepunchto/blind-pairing-core')
 const Protomux = require('protomux')
 const c = require('compact-encoding')
 const isOptions = require('is-options')
@@ -66,6 +66,10 @@ class BlindPairing extends ReadyResource {
 
   static createInvite (key, opts) {
     return createInvite(key, opts)
+  }
+
+  static decodeInvite (invite) {
+    return decodeInvite(invite)
   }
 
   static createRequest (invite, userData) {
@@ -409,6 +413,7 @@ class Candidate extends ReadyResource {
     if (this._done()) return
 
     await this.dht.announce(this.discoveryKey, eph).finished()
+    this.emit('announce')
   }
 
   async _gc () {
