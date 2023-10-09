@@ -64,8 +64,8 @@ class BlindPairing extends ReadyResource {
     this.swarm.on('connection', this._onconnectionBound)
   }
 
-  static createInvite (key) {
-    return createInvite(key)
+  static createInvite (key, opts) {
+    return createInvite(key, opts)
   }
 
   static createRequest (invite, userData) {
