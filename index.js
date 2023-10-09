@@ -19,6 +19,8 @@ const ReadyResource = require('ready-resource')
 const Xache = require('xache')
 const { MemberRequest, createInvite } = require('@holepunchto/blind-pairing-core')
 
+const [NS_EPHEMERAL, NS_REPLY] = crypto.namespace('blind-pairing/dht', 2)
+
 const DEFAULT_POLL = 7 * 60 * 1000
 
 class TimeoutPromise {
@@ -61,7 +63,7 @@ class TimeoutPromise {
 }
 
 class Member extends ReadyResource {
-  constructor (swarm, { poll = DEFAULT_POLL, invite, topic = invite && (invite.discoveryKey || getTopic(invite.id)), onadd = noop }) {
+  constructor (swarm, { poll = DEFAULT_POLL, invite, topic = invite && invite.discoveryKey, onadd = noop }) {
     if (!topic) throw new Error('Topic must be provided')
     super()
 
@@ -140,7 +142,7 @@ class Member extends ReadyResource {
       return false // should we post deny?
     }
 
-    const replyKeyPair = getReplyKeyPair(request.token)
+    const replyKeyPair = deriveReplyKeyPair(request.token)
     await this.dht.mutablePut(replyKeyPair, request.response)
 
     return true
@@ -149,14 +151,14 @@ class Member extends ReadyResource {
 
 // request should be keetPairing.CandidateRequest
 class Candidate extends ReadyResource {
-  constructor (swarm, request, { poll = DEFAULT_POLL, topic = (request.discoveryKey || getTopic(request.id)), onadd = noop } = {}) {
+  constructor (swarm, request, { poll = DEFAULT_POLL, topic = request.discoveryKey, onadd = noop } = {}) {
     super()
 
     const randomizedPollTime = poll + (poll * 0.5 * Math.random()) | 0
 
     this.dht = swarm.dht
     this.request = request
-    this.key = request.userData
+    this.token = request.token
     this.topic = topic
     this.timeout = new TimeoutPromise(randomizedPollTime)
     this.started = null
@@ -205,14 +207,14 @@ class Candidate extends ReadyResource {
   }
 
   async announce () {
-    const eph = deriveEphemeralKeyPair(this.key, this.request.seed)
+    const eph = deriveEphemeralKeyPair(this.token)
 
     await this.dht.mutablePut(eph, this.request.encode())
     await this.dht.announce(this.topic, eph).finished()
   }
 
   async gc () {
-    const eph = deriveEphemeralKeyPair(this.key, this.request.seed)
+    const eph = deriveEphemeralKeyPair(this.token)
 
     try {
       await this.dht.unannounce(this.topic, eph)
@@ -222,7 +224,8 @@ class Candidate extends ReadyResource {
   }
 
   async poll () {
-    const { publicKey } = getReplyKeyPair(this.request.token)
+    const { publicKey } = deriveReplyKeyPair(this.token)
+
     const node = await this.dht.mutableGet(publicKey, { latest: false })
     if (!node) return null
 
@@ -238,15 +241,10 @@ module.exports = {
 
 function noop () {}
 
-function getTopic (id) {
-  return crypto.hash([id, b4a.from('invite-topic')])
+function deriveReplyKeyPair (token) {
+  return crypto.keyPair(crypto.hash([NS_REPLY, token]))
 }
 
-function getReplyKeyPair (token) {
-  const replySeed = crypto.hash([token, b4a.from('invite-reply')])
-  return crypto.keyPair(replySeed)
-}
-
-function deriveEphemeralKeyPair (memberKey, seed) {
-  return crypto.keyPair(crypto.hash([memberKey, seed, b4a.from('invite-ephemeral-key-pair')]))
+function deriveEphemeralKeyPair (token) {
+  return crypto.keyPair(crypto.hash([NS_EPHEMERAL, token]))
 }
