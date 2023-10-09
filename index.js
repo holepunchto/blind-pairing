@@ -1,23 +1,11 @@
-/*
-ish ish protocol
-member (a), candidate (b)
-
-1) a sends b an invite out of band, random-key=r, invite={r.publicKey}
-2) b uses the invite to generate the topic, keyPair(r.publicKey + 'protopair')
-   b generates an emphemeral keypair, k and adds k.publicKey to the set in the dht
-   b generates a reply keypair=keyPair(autobase_member_key + r.publicKey + 'reply'),
-   and stores in the dht k.publicKey -> assymmetric_enc(autobase_member_key, publicKey=r.publicKey)
-3) a polls the topic, on new entry a does:
-     read k.publicKey -> decrypt the payload -> add autobase_member -> write reply (encryption-key + autobase-key) assymmetric_enc to the reply keypair
-4) b polls the reply keypair, on new entry it checks the validity and the pairing is done
-*/
-
 const crypto = require('hypercore-crypto')
 const b4a = require('b4a')
 const safetyCatch = require('safety-catch')
 const ReadyResource = require('ready-resource')
 const Xache = require('xache')
-const { MemberRequest, createInvite } = require('@holepunchto/blind-pairing-core')
+const { MemberRequest, CandidateRequest, createInvite } = require('@holepunchto/blind-pairing-core')
+const Protomux = require('protomux')
+const c = require('compact-encoding')
 
 const [NS_EPHEMERAL, NS_REPLY] = crypto.namespace('blind-pairing/dht', 2)
 
@@ -62,44 +50,213 @@ class TimeoutPromise {
   }
 }
 
-class Member extends ReadyResource {
-  constructor (swarm, { poll = DEFAULT_POLL, invite, topic = invite && invite.discoveryKey, onadd = noop }) {
-    if (!topic) throw new Error('Topic must be provided')
+class BlindPairing extends ReadyResource {
+  constructor (swarm, { poll = DEFAULT_POLL } = {}) {
     super()
 
-    const randomizedPollTime = poll + (poll * 0.5 * Math.random()) | 0
+    this.swarm = swarm
+    this.poll = poll
+    this.active = new Map()
 
-    this.dht = swarm.dht
+    this._onconnectionBound = this._onconnection.bind(this)
+
+    this.swarm.on('connection', this._onconnectionBound)
+  }
+
+  static createInvite (key) {
+    return createInvite(key)
+  }
+
+  static createRequest (invite, userData) {
+    return new CandidateRequest(invite, userData)
+  }
+
+  addMember (topic, opts) {
+    return new Member(this, topic, opts)
+  }
+
+  addCandidate (topic, request, opts) {
+    return new Candidate(this, topic, request, opts)
+  }
+
+  async _close () {
+    this.swarm.removeListener('connection', this._onconnectionBound)
+
+    const all = []
+
+    for (const ref of this.active.values()) {
+      if (ref.member) all.push(ref.member.close())
+      if (ref.candidate) all.push(ref.candidate.close())
+      if (ref.discovery) all.push(ref.discovery.destroy())
+    }
+
+    await Promise.allSettled(all)
+  }
+
+  _randomPoll () {
+    return this.poll + (this.poll * 0.5 * Math.random()) | 0
+  }
+
+  _add (topic) {
+    const id = b4a.toString(topic, 'hex')
+    const t = this.active.get(id)
+    if (t) return t
+
+    const fresh = {
+      id,
+      topic,
+      member: null,
+      candidate: null,
+      channels: new Set(),
+      discovery: null
+    }
+
+    this.active.set(id, fresh)
+    return fresh
+  }
+
+  _swarm (ref) {
+    const server = !!ref.member
+    const client = !!ref.candidate
+
+    if (ref.discovery && ref.discovery.isServer === server && ref.discovery.isClient === client) {
+      return
+    }
+
+    if (ref.discovery) ref.discovery.destroy().catch(safetyCatch)
+
+    // just a sanity check, not needed but doesnt hurt
+    if (!server && !client) return
+
+    ref.discovery = this.swarm.join(ref.topic, { server, client })
+
+    for (const conn of this.swarm.connections) {
+      const mux = getMuxer(conn)
+      this._attachToMuxer(mux, ref.topic, ref)
+    }
+  }
+
+  _gc (ref) {
+    if (ref.member || ref.candidate) {
+      if (ref.discovery) this._swarm(ref) // in case it needs updating...
+      return false
+    }
+    this.active.delete(ref.id)
+    for (const ch of ref.channels) ch.close()
+    for (const conn of this.swarm.connections) {
+      const mux = getMuxer(conn)
+      mux.unpair({ protocol: 'blind-pairing', id: ref.topic })
+    }
+    if (ref.discovery) ref.discovery.destroy().catch(safetyCatch)
+    return true
+  }
+
+  _onconnection (conn) {
+    const mux = getMuxer(conn)
+
+    for (const ref of this.active.values()) {
+      this._attachToMuxer(mux, ref.topic, ref)
+    }
+  }
+
+  _attachToMuxer (mux, topic, ref) {
+    if (!ref) ref = this._add(topic)
+
+    const ch = mux.createChannel({
+      protocol: 'blind-pairing',
+      id: topic,
+      messages: [
+        { encoding: c.any, onmessage: (m) => this._onpairingrequest(ch, ref, m) },
+        { encoding: c.any, onmessage: (m) => this._onpairingresponse(ch, ref, m) }
+      ],
+      onclose: () => {
+        ref.channels.delete(ch)
+      }
+    })
+
+    if (ch === null) return
+
+    ch.open()
+    mux.pair({ protocol: 'blind-pairing', id: topic }, () => this._attachToMuxer(mux, topic, null))
+    ref.channels.add(ch)
+    if (ref.candidate) ref.candidate._sendRequest(ch)
+  }
+
+  async _onpairingrequest (ch, ref, m) {
+    if (!ref.member) return
+
+    const request = await ref.member._addRequest(m.request)
+    if (!request) return
+
+    ch.messages[1].send({
+      id: m.id,
+      response: request.response
+    })
+  }
+
+  async _onpairingresponse (ch, ref, m) {
+    // we only support a single candidate atm, expect it to be there
+    if (!ref.candidate || m.id !== 0) return
+
+    await ref.candidate._addResponse(m.response)
+  }
+}
+
+class Member extends ReadyResource {
+  constructor (pairing, topic, { onadd = noop } = {}) {
+    super()
+
+    const ref = pairing._add(topic)
+
+    if (ref.member) {
+      throw new Error('Active member already exist')
+    }
+
+    ref.member = this
+
+    this.pairing = pairing
+    this.dht = pairing.swarm.dht
     this.topic = topic
-    this.timeout = new TimeoutPromise(randomizedPollTime)
-    this.started = null
-    this.onadd = onadd
+    this.timeout = new TimeoutPromise(pairing._randomPoll())
+    this.running = null
     this.skip = new Xache({ maxSize: 512 })
+    this.ref = ref
+    this.onadd = onadd
 
     this.ready()
   }
 
-  async start () {
-    if (this.started === null) this.started = this._start()
-    return this.started
+  async flushed () {
+    if (!this.ref.discovery) return
+    return this.ref.discovery.flushed()
   }
 
   _open () {
-    if (this.started === null) this.start().catch(safetyCatch)
+    this.pairing._swarm(this.ref)
+    this.running = this._run()
+    this.running.catch(safetyCatch)
   }
 
-  _close () {
+  async _close () {
+    this.ref.member = null
+    this.pairing._gc(this.ref)
     this.timeout.destroy()
+
+    try {
+      await this.running
+    } catch {
+      // ignore errors since we teardown
+    }
   }
 
-  async _start () {
+  async _run () {
     while (!this.closing) {
-      await this.poll()
+      await this._poll()
       await this.timeout.wait()
     }
   }
 
-  async poll () {
+  async _poll () {
     const visited = new Set()
 
     for await (const data of this.dht.lookup(this.topic)) {
@@ -118,29 +275,34 @@ class Member extends ReadyResource {
     }
   }
 
-  async _add (publicKey, id) {
-    const node = await this.dht.mutableGet(publicKey, { latest: false })
-    if (!node) return false
-
-    this.skip.set(id, true)
-
+  async _addRequest (value) {
     let request = null
     try {
-      request = MemberRequest.from(node.value)
+      request = MemberRequest.from(value)
     } catch {
-      return false
+      return null
     }
 
     try {
       await this.onadd(request)
     } catch (e) {
       safetyCatch(e)
-      return false
+      return null
     }
 
-    if (!request.response) {
-      return false // should we post deny?
-    }
+    if (!request.response) return null
+
+    return request
+  }
+
+  async _add (publicKey, id) {
+    const node = await this.dht.mutableGet(publicKey, { latest: false })
+    if (!node) return false
+
+    this.skip.set(id, true)
+
+    const request = await this._addRequest(node.value)
+    if (!request) return false
 
     const replyKeyPair = deriveReplyKeyPair(request.token)
     await this.dht.mutablePut(replyKeyPair, request.response)
@@ -149,71 +311,98 @@ class Member extends ReadyResource {
   }
 }
 
-// request should be keetPairing.CandidateRequest
 class Candidate extends ReadyResource {
-  constructor (swarm, request, { poll = DEFAULT_POLL, topic = request.discoveryKey, onadd = noop } = {}) {
+  constructor (pairing, topic, request, { onadd = noop } = {}) {
     super()
 
-    const randomizedPollTime = poll + (poll * 0.5 * Math.random()) | 0
+    const ref = pairing._add(topic)
+    if (ref.candidate) {
+      throw new Error('Active candidate already exist')
+    }
 
-    this.dht = swarm.dht
+    ref.candidate = this
+
+    this.pairing = pairing
+    this.topic = topic
+    this.dht = pairing.swarm.dht
     this.request = request
     this.token = request.token
-    this.topic = topic
-    this.timeout = new TimeoutPromise(randomizedPollTime)
-    this.started = null
+    this.timeout = new TimeoutPromise(pairing._randomPoll())
+    this.running = null
+    this.announced = false
     this.gcing = null
+    this.ref = ref
+    this.paired = null
     this.onadd = onadd
-  }
 
-  async start () {
-    if (this.started === null) this.started = this._start()
-    return this.started
-  }
-
-  _gcBackground () {
-    if (!this.gcing) this.gcing = this.gc()
+    this.ready()
   }
 
   _open () {
-    if (this.started === null) this.start().catch(safetyCatch)
+    this.pairing._swarm(this.ref)
+    this.running = this._run()
+    this.running.catch(safetyCatch)
+    this._broadcast()
   }
 
   async _close () {
+    this.ref.candidate = null
+    this.pairing._gc(this.ref)
     this.timeout.destroy()
-    this._gcBackground()
-    await this.gcing
+    try {
+      await this.running
+    } catch {
+      // ignore errors since we teardown
+    }
+    // gc never throws
+    if (this.gcing) await this.gcing
   }
 
-  async _start () {
-    let announced = false
+  async _addResponse (value) {
+    if (this.paired) return
 
-    while (!this.closing) {
-      const reply = await this.poll()
-      if (reply) {
-        this._gcBackground()
-        await this.onadd(reply)
-        return reply
+    const paired = this.request.handleResponse(value)
+    if (!paired) return
+
+    this.paired = paired
+    if (this.announced && !this.gcing) this.gcing = this._gc() // gc in the background
+    await this.onadd(paired)
+  }
+
+  async _run () {
+    while (!this._done()) {
+      const value = await this._poll()
+      if (this._done()) return
+
+      if (value) {
+        await this._addResponse(value)
+        if (this._done()) return
       }
-      if (!announced) {
-        await this.announce()
-        announced = true
+
+      if (!this.announced) {
+        this.announced = true
+        await this._announce()
+        if (this._done()) return
       }
 
       await this.timeout.wait()
     }
-
-    return null
   }
 
-  async announce () {
+  _done () {
+    return !!(this.closing || this.paired)
+  }
+
+  async _announce () {
     const eph = deriveEphemeralKeyPair(this.token)
 
     await this.dht.mutablePut(eph, this.request.encode())
+    if (this._done()) return
+
     await this.dht.announce(this.topic, eph).finished()
   }
 
-  async gc () {
+  async _gc () {
     const eph = deriveEphemeralKeyPair(this.token)
 
     try {
@@ -223,21 +412,26 @@ class Candidate extends ReadyResource {
     }
   }
 
-  async poll () {
-    const { publicKey } = deriveReplyKeyPair(this.token)
+  _sendRequest (ch) {
+    ch.messages[0].send({
+      id: 0, // just in case we ever wanna have multiple active candidates...
+      request: this.request.encode()
+    })
+  }
 
+  _broadcast () {
+    for (const ch of this.ref.channels) this._sendRequest(ch)
+  }
+
+  async _poll () {
+    const { publicKey } = deriveReplyKeyPair(this.token)
     const node = await this.dht.mutableGet(publicKey, { latest: false })
     if (!node) return null
-
-    return this.request.handleResponse(node.value)
+    return node.value
   }
 }
 
-module.exports = {
-  Member,
-  Candidate,
-  createInvite
-}
+module.exports = BlindPairing
 
 function noop () {}
 
@@ -247,4 +441,12 @@ function deriveReplyKeyPair (token) {
 
 function deriveEphemeralKeyPair (token) {
   return crypto.keyPair(crypto.hash([NS_EPHEMERAL, token]))
+}
+
+function getMuxer (stream) {
+  if (stream.userData) return stream.userData
+  const protocol = Protomux.from(stream)
+  stream.setKeepAlive(5000)
+  stream.userData = protocol
+  return protocol
 }
