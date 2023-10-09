@@ -8,7 +8,7 @@ const Protomux = require('protomux')
 const c = require('compact-encoding')
 const isOptions = require('is-options')
 
-const [NS_EPHEMERAL, NS_REPLY] = crypto.namespace('blind-pairing/dht', 2)
+const [NS_EPHEMERAL, NS_REPLY, NS_DISCOVERY] = crypto.namespace('blind-pairing/dht', 3)
 
 const DEFAULT_POLL = 7 * 60 * 1000
 
@@ -201,7 +201,7 @@ class BlindPairing extends ReadyResource {
   async _onpairingresponse (ch, ref, res) {
     if (!ref.candidate) return
 
-    await ref.candidate._addResponse(res)
+    await ref.candidate._addResponse(res, false)
   }
 }
 
@@ -224,6 +224,7 @@ class Member extends ReadyResource {
     this.blind = blind
     this.dht = blind.swarm.dht
     this.discoveryKey = discoveryKey
+    this.pairingDiscoveryKey = deriveDiscoveryKey(discoveryKey)
     this.timeout = new TimeoutPromise(blind._randomPoll())
     this.pairing = null
     this.skip = new Xache({ maxSize: 512 })
@@ -266,7 +267,7 @@ class Member extends ReadyResource {
   async _poll () {
     const visited = new Set()
 
-    for await (const data of this.dht.lookup(this.discoveryKey)) {
+    for await (const data of this.dht.lookup(this.pairingDiscoveryKey)) {
       for (const peer of data.peers) {
         const id = b4a.toString(peer.publicKey, 'hex')
 
@@ -333,6 +334,7 @@ class Candidate extends ReadyResource {
 
     this.blind = blind
     this.discoveryKey = discoveryKey
+    this.pairingDiscoveryKey = deriveDiscoveryKey(discoveryKey)
     this.dht = blind.swarm.dht
     this.request = request
     this.token = request.token
@@ -367,14 +369,15 @@ class Candidate extends ReadyResource {
     if (this.gcing) await this.gcing
   }
 
-  async _addResponse (value) {
+  async _addResponse (value, gc) {
     if (this.paired) return
 
     const paired = this.request.handleResponse(value)
     if (!paired) return
 
     this.paired = paired
-    if (this.announced && !this.gcing) this.gcing = this._gc() // gc in the background
+
+    if ((gc || this.announced) && !this.gcing) this.gcing = this._gc() // gc in the background
     await this.onadd(paired)
     this.timeout.destroy()
   }
@@ -385,7 +388,7 @@ class Candidate extends ReadyResource {
       if (this._done()) break
 
       if (value) {
-        await this._addResponse(value)
+        await this._addResponse(value, true)
         if (this._done()) break
       }
 
@@ -412,7 +415,7 @@ class Candidate extends ReadyResource {
     await this.dht.mutablePut(eph, this.request.encode())
     if (this._done()) return
 
-    await this.dht.announce(this.discoveryKey, eph).finished()
+    await this.dht.announce(this.pairingDiscoveryKey, eph).finished()
     this.emit('announce')
   }
 
@@ -420,7 +423,7 @@ class Candidate extends ReadyResource {
     const eph = deriveEphemeralKeyPair(this.token)
 
     try {
-      await this.dht.unannounce(this.discoveryKey, eph)
+      await this.dht.unannounce(this.pairingDiscoveryKey, eph)
     } catch (err) {
       safetyCatch(err) // just gc, whatevs
     }
@@ -452,6 +455,10 @@ function deriveReplyKeyPair (token) {
 
 function deriveEphemeralKeyPair (token) {
   return crypto.keyPair(crypto.hash([NS_EPHEMERAL, token]))
+}
+
+function deriveDiscoveryKey (discoveryKey) {
+  return crypto.hash([NS_DISCOVERY, discoveryKey])
 }
 
 function getMuxer (stream) {
