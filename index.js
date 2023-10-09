@@ -203,10 +203,10 @@ class BlindPairing extends ReadyResource {
 }
 
 class Member extends ReadyResource {
-  constructor (pairing, topic, { onadd = noop } = {}) {
+  constructor (blind, topic, { onadd = noop } = {}) {
     super()
 
-    const ref = pairing._add(topic)
+    const ref = blind._add(topic)
 
     if (ref.member) {
       throw new Error('Active member already exist')
@@ -214,11 +214,11 @@ class Member extends ReadyResource {
 
     ref.member = this
 
-    this.pairing = pairing
-    this.dht = pairing.swarm.dht
+    this.blind = blind
+    this.dht = blind.swarm.dht
     this.topic = topic
-    this.timeout = new TimeoutPromise(pairing._randomPoll())
-    this.running = null
+    this.timeout = new TimeoutPromise(blind._randomPoll())
+    this.pairing = null
     this.skip = new Xache({ maxSize: 512 })
     this.ref = ref
     this.onadd = onadd
@@ -232,18 +232,18 @@ class Member extends ReadyResource {
   }
 
   _open () {
-    this.pairing._swarm(this.ref)
-    this.running = this._run()
-    this.running.catch(safetyCatch)
+    this.blind._swarm(this.ref)
+    this.pairing = this._run()
+    this.pairing.catch(safetyCatch)
   }
 
   async _close () {
     this.ref.member = null
-    this.pairing._gc(this.ref)
+    this.blind._gc(this.ref)
     this.timeout.destroy()
 
     try {
-      await this.running
+      await this.pairing
     } catch {
       // ignore errors since we teardown
     }
@@ -312,45 +312,45 @@ class Member extends ReadyResource {
 }
 
 class Candidate extends ReadyResource {
-  constructor (pairing, topic, request, { onadd = noop } = {}) {
+  constructor (blind, topic, request, { onadd = noop } = {}) {
     super()
 
-    const ref = pairing._add(topic)
+    const ref = blind._add(topic)
     if (ref.candidate) {
       throw new Error('Active candidate already exist')
     }
 
     ref.candidate = this
 
-    this.pairing = pairing
+    this.blind = blind
     this.topic = topic
-    this.dht = pairing.swarm.dht
+    this.dht = blind.swarm.dht
     this.request = request
     this.token = request.token
-    this.timeout = new TimeoutPromise(pairing._randomPoll())
-    this.running = null
+    this.timeout = new TimeoutPromise(blind._randomPoll())
     this.announced = false
     this.gcing = null
     this.ref = ref
     this.paired = null
+    this.pairing = null
     this.onadd = onadd
 
     this.ready()
   }
 
   _open () {
-    this.pairing._swarm(this.ref)
-    this.running = this._run()
-    this.running.catch(safetyCatch)
+    this.blind._swarm(this.ref)
+    this.pairing = this._run()
+    this.pairing.catch(safetyCatch)
     this._broadcast()
   }
 
   async _close () {
     this.ref.candidate = null
-    this.pairing._gc(this.ref)
+    this.blind._gc(this.ref)
     this.timeout.destroy()
     try {
-      await this.running
+      await this.pairing
     } catch {
       // ignore errors since we teardown
     }
@@ -367,26 +367,30 @@ class Candidate extends ReadyResource {
     this.paired = paired
     if (this.announced && !this.gcing) this.gcing = this._gc() // gc in the background
     await this.onadd(paired)
+    this.timeout.destroy()
   }
 
   async _run () {
     while (!this._done()) {
       const value = await this._poll()
-      if (this._done()) return
+      if (this._done()) break
 
       if (value) {
         await this._addResponse(value)
-        if (this._done()) return
+        if (this._done()) break
       }
 
       if (!this.announced) {
         this.announced = true
         await this._announce()
-        if (this._done()) return
+        if (this._done()) break
       }
 
       await this.timeout.wait()
     }
+
+    this.close().catch(safetyCatch)
+    return this.paired
   }
 
   _done () {

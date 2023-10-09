@@ -27,16 +27,16 @@ const b = new BlindPairing(new Hyperswarm({ bootstrap: t.bootstrap }), {
   poll: 5000
 })
 
-b.addCandidate(discoveryKey, request, {
+const c = b.addCandidate(discoveryKey, request, {
   async onadd (result) {
     console.log('got the result!', result)
   }
 })
 
 console.time('paired')
-await new Promise(resolve => request.on('accepted', resolve))
+await c.pairing
 console.timeEnd('paired')
-console.log('paired:', request.auth)
+console.log('paired:', c.paired)
 
 await a.close()
 await b.close()
