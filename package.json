@@ -4,9 +4,10 @@
   "description": "Blind pairing using HyperDHT",
   "main": "index.js",
   "dependencies": {
-    "@holepunchto/blind-pairing-core": "^0.0.3",
+    "@holepunchto/blind-pairing-core": "^0.0.6",
     "b4a": "^1.6.4",
     "hypercore-crypto": "^3.4.0",
+    "is-options": "^1.0.2",
     "ready-resource": "^1.0.0",
     "safety-catch": "^1.0.2",
     "xache": "^1.2.0"

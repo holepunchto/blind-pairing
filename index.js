@@ -6,6 +6,7 @@ const Xache = require('xache')
 const { MemberRequest, CandidateRequest, createInvite } = require('@holepunchto/blind-pairing-core')
 const Protomux = require('protomux')
 const c = require('compact-encoding')
+const isOptions = require('is-options')
 
 const [NS_EPHEMERAL, NS_REPLY] = crypto.namespace('blind-pairing/dht', 2)
 
@@ -71,12 +72,14 @@ class BlindPairing extends ReadyResource {
     return new CandidateRequest(invite, userData)
   }
 
-  addMember (topic, opts) {
-    return new Member(this, topic, opts)
+  addMember (opts) {
+    return new Member(this, opts)
   }
 
-  addCandidate (topic, request, opts) {
-    return new Candidate(this, topic, request, opts)
+  addCandidate (request, opts) {
+    if (isOptions(request)) return this.addCandidate(null, request)
+    if (!request) request = new CandidateRequest(opts.invite, opts.userData)
+    return new Candidate(this, request, opts)
   }
 
   async _close () {
@@ -97,14 +100,14 @@ class BlindPairing extends ReadyResource {
     return this.poll + (this.poll * 0.5 * Math.random()) | 0
   }
 
-  _add (topic) {
-    const id = b4a.toString(topic, 'hex')
+  _add (discoveryKey) {
+    const id = b4a.toString(discoveryKey, 'hex')
     const t = this.active.get(id)
     if (t) return t
 
     const fresh = {
       id,
-      topic,
+      discoveryKey,
       member: null,
       candidate: null,
       channels: new Set(),
@@ -128,11 +131,11 @@ class BlindPairing extends ReadyResource {
     // just a sanity check, not needed but doesnt hurt
     if (!server && !client) return
 
-    ref.discovery = this.swarm.join(ref.topic, { server, client })
+    ref.discovery = this.swarm.join(ref.discoveryKey, { server, client })
 
     for (const conn of this.swarm.connections) {
       const mux = getMuxer(conn)
-      this._attachToMuxer(mux, ref.topic, ref)
+      this._attachToMuxer(mux, ref.discoveryKey, ref)
     }
   }
 
@@ -145,7 +148,7 @@ class BlindPairing extends ReadyResource {
     for (const ch of ref.channels) ch.close()
     for (const conn of this.swarm.connections) {
       const mux = getMuxer(conn)
-      mux.unpair({ protocol: 'blind-pairing', id: ref.topic })
+      mux.unpair({ protocol: 'blind-pairing', id: ref.discoveryKey })
     }
     if (ref.discovery) ref.discovery.destroy().catch(safetyCatch)
     return true
@@ -155,19 +158,19 @@ class BlindPairing extends ReadyResource {
     const mux = getMuxer(conn)
 
     for (const ref of this.active.values()) {
-      this._attachToMuxer(mux, ref.topic, ref)
+      this._attachToMuxer(mux, ref.discoveryKey, ref)
     }
   }
 
-  _attachToMuxer (mux, topic, ref) {
-    if (!ref) ref = this._add(topic)
+  _attachToMuxer (mux, discoveryKey, ref) {
+    if (!ref) ref = this._add(discoveryKey)
 
     const ch = mux.createChannel({
       protocol: 'blind-pairing',
-      id: topic,
+      id: discoveryKey,
       messages: [
-        { encoding: c.any, onmessage: (m) => this._onpairingrequest(ch, ref, m) },
-        { encoding: c.any, onmessage: (m) => this._onpairingresponse(ch, ref, m) }
+        { encoding: c.buffer, onmessage: (req) => this._onpairingrequest(ch, ref, req) },
+        { encoding: c.buffer, onmessage: (res) => this._onpairingresponse(ch, ref, res) }
       ],
       onclose: () => {
         ref.channels.delete(ch)
@@ -177,36 +180,36 @@ class BlindPairing extends ReadyResource {
     if (ch === null) return
 
     ch.open()
-    mux.pair({ protocol: 'blind-pairing', id: topic }, () => this._attachToMuxer(mux, topic, null))
+    mux.pair({ protocol: 'blind-pairing', id: discoveryKey }, () => this._attachToMuxer(mux, discoveryKey, null))
     ref.channels.add(ch)
     if (ref.candidate) ref.candidate._sendRequest(ch)
   }
 
-  async _onpairingrequest (ch, ref, m) {
+  async _onpairingrequest (ch, ref, req) {
     if (!ref.member) return
 
-    const request = await ref.member._addRequest(m.request)
+    const request = await ref.member._addRequest(req)
     if (!request) return
 
-    ch.messages[1].send({
-      id: m.id,
-      response: request.response
-    })
+    ch.messages[1].send(request.response)
   }
 
-  async _onpairingresponse (ch, ref, m) {
-    // we only support a single candidate atm, expect it to be there
-    if (!ref.candidate || m.id !== 0) return
+  async _onpairingresponse (ch, ref, res) {
+    if (!ref.candidate) return
 
-    await ref.candidate._addResponse(m.response)
+    await ref.candidate._addResponse(res)
   }
 }
 
 class Member extends ReadyResource {
-  constructor (blind, topic, { onadd = noop } = {}) {
+  constructor (blind, { discoveryKey, onadd = noop } = {}) {
     super()
 
-    const ref = blind._add(topic)
+    if (!discoveryKey) {
+      throw new Error('Must provide discoveryKey')
+    }
+
+    const ref = blind._add(discoveryKey)
 
     if (ref.member) {
       throw new Error('Active member already exist')
@@ -216,7 +219,7 @@ class Member extends ReadyResource {
 
     this.blind = blind
     this.dht = blind.swarm.dht
-    this.topic = topic
+    this.discoveryKey = discoveryKey
     this.timeout = new TimeoutPromise(blind._randomPoll())
     this.pairing = null
     this.skip = new Xache({ maxSize: 512 })
@@ -259,7 +262,7 @@ class Member extends ReadyResource {
   async _poll () {
     const visited = new Set()
 
-    for await (const data of this.dht.lookup(this.topic)) {
+    for await (const data of this.dht.lookup(this.discoveryKey)) {
       for (const peer of data.peers) {
         const id = b4a.toString(peer.publicKey, 'hex')
 
@@ -282,6 +285,8 @@ class Member extends ReadyResource {
     } catch {
       return null
     }
+
+    request.discoveryKey = this.discoveryKey
 
     try {
       await this.onadd(request)
@@ -312,10 +317,10 @@ class Member extends ReadyResource {
 }
 
 class Candidate extends ReadyResource {
-  constructor (blind, topic, request, { onadd = noop } = {}) {
+  constructor (blind, request, { discoveryKey = request.discoveryKey, onadd = noop } = {}) {
     super()
 
-    const ref = blind._add(topic)
+    const ref = blind._add(discoveryKey)
     if (ref.candidate) {
       throw new Error('Active candidate already exist')
     }
@@ -323,7 +328,7 @@ class Candidate extends ReadyResource {
     ref.candidate = this
 
     this.blind = blind
-    this.topic = topic
+    this.discoveryKey = discoveryKey
     this.dht = blind.swarm.dht
     this.request = request
     this.token = request.token
@@ -403,24 +408,21 @@ class Candidate extends ReadyResource {
     await this.dht.mutablePut(eph, this.request.encode())
     if (this._done()) return
 
-    await this.dht.announce(this.topic, eph).finished()
+    await this.dht.announce(this.discoveryKey, eph).finished()
   }
 
   async _gc () {
     const eph = deriveEphemeralKeyPair(this.token)
 
     try {
-      await this.dht.unannounce(this.topic, eph)
+      await this.dht.unannounce(this.discoveryKey, eph)
     } catch (err) {
       safetyCatch(err) // just gc, whatevs
     }
   }
 
   _sendRequest (ch) {
-    ch.messages[0].send({
-      id: 0, // just in case we ever wanna have multiple active candidates...
-      request: this.request.encode()
-    })
+    ch.messages[0].send(this.request.encode())
   }
 
   _broadcast () {
