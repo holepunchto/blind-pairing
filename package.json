@@ -3,6 +3,9 @@
   "version": "0.0.7",
   "description": "Blind pairing using HyperDHT",
   "main": "index.js",
+  "files": [
+    "index.js"
+  ],
   "dependencies": {
     "@holepunchto/blind-pairing-core": "^0.0.8",
     "b4a": "^1.6.4",
