@@ -1,22 +1,24 @@
 const Hyperswarm = require('hyperswarm')
 const BlindPairing = require('@holepunchto/blind-pairing')
 const z32 = require('z32')
-const os = require('os')
+const minimist = require('minimist')
+const args = minimist(process.argv.slice(2), { alias: { invite: 'i', key: 'k', 'user-data': 'u' } })
+const cmd = args._[0]
 
-if (process.argv[2] !== 'member' && process.argv[2] !== 'candidate') {
-  console.error('Usage: node cli.js member|candidate invite?')
+if (cmd !== 'member' && cmd !== 'candidate') {
+  console.error('Usage: node cli.js member|candidate [--invite=invite, --key=key, --user-data=user-data]')
   process.exit(1)
 }
 
 const swarm = new Hyperswarm()
 const pairer = new BlindPairing(swarm)
-const invite = process.argv[3] && z32.decode(process.argv[3])
+const invite = args.invite && z32.decode(args.invite)
 
-if (process.argv[2] === 'member') onmember()
-else if (process.argv[2] === 'candidate') oncandidate()
+if (cmd === 'member') onmember()
+else if (cmd === 'candidate') oncandidate()
 
 async function onmember () {
-  const key = Buffer.alloc(32).fill('key-from-' + os.hostname())
+  const key = Buffer.alloc(32).fill(args.key || 'key')
   const inv = invite
     ? BlindPairing.createInvite(key, BlindPairing.decodeInvite(invite))
     : BlindPairing.createInvite(key)
@@ -38,7 +40,7 @@ async function onmember () {
 async function oncandidate () {
   const c = pairer.addCandidate({
     invite,
-    userData: Buffer.alloc(32).fill('i-am-a-candidate'),
+    userData: Buffer.alloc(32).fill(args['user-data'] || 'user-data'),
     onadd ({ key }) {
       console.log('pairing completed!', key.toString())
     }
