@@ -115,6 +115,8 @@ class BlindPairing extends ReadyResource {
       member: null,
       candidate: null,
       channels: new Set(),
+      alwaysServer: false,
+      alwaysClient: false,
       discovery: null
     }
 
@@ -123,8 +125,8 @@ class BlindPairing extends ReadyResource {
   }
 
   _swarm (ref) {
-    const server = !!ref.member
-    const client = !!ref.candidate
+    const server = ref.alwaysServer || !!ref.member
+    const client = ref.alwaysClient || !!ref.candidate
 
     if (ref.discovery && ref.discovery.isServer === server && ref.discovery.isClient === client) {
       return
@@ -266,8 +268,11 @@ class Member extends ReadyResource {
 
   async _poll () {
     const visited = new Set()
+    let alwaysClient = false
 
     for await (const data of this.dht.lookup(this.pairingDiscoveryKey)) {
+      if (this.closing) return
+
       for (const peer of data.peers) {
         const id = b4a.toString(peer.publicKey, 'hex')
 
@@ -275,11 +280,18 @@ class Member extends ReadyResource {
         visited.add(id)
 
         try {
-          await this._add(peer.publicKey, id)
+          if (await this._add(peer.publicKey, id)) alwaysClient = true
         } catch (err) {
           safetyCatch(err)
         }
+
+        if (this.closing) return
       }
+    }
+
+    if (!this.closing) {
+      this.ref.alwaysClient = alwaysClient
+      this.blind._swarm(this.ref)
     }
   }
 
@@ -416,6 +428,12 @@ class Candidate extends ReadyResource {
     if (this._done()) return
 
     await this.dht.announce(this.pairingDiscoveryKey, eph).finished()
+
+    if (!this.paired) {
+      this.ref.alwaysServer = true
+      this.blind._swarm(this.ref)
+    }
+
     this.emit('announce')
   }
 
