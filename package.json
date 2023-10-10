@@ -1,6 +1,6 @@
 {
   "name": "@holepunchto/blind-pairing",
-  "version": "1.1.0",
+  "version": "1.2.0",
   "description": "Blind pairing using Hyperswarm",
   "main": "index.js",
   "files": [
