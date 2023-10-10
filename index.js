@@ -3,7 +3,7 @@ const b4a = require('b4a')
 const safetyCatch = require('safety-catch')
 const ReadyResource = require('ready-resource')
 const Xache = require('xache')
-const { MemberRequest, CandidateRequest, createInvite, decodeInvite, verifyReceipt } = require('@holepunchto/blind-pairing-core')
+const { MemberRequest, CandidateRequest, createInvite, decodeInvite, verifyReceipt, Invite } = require('@holepunchto/blind-pairing-core')
 const Protomux = require('protomux')
 const c = require('compact-encoding')
 const isOptions = require('is-options')
@@ -63,6 +63,8 @@ class BlindPairing extends ReadyResource {
 
     this.swarm.on('connection', this._onconnectionBound)
   }
+
+  static Invite = Invite
 
   static createInvite (key, opts) {
     return createInvite(key, opts)
