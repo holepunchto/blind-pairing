@@ -292,13 +292,27 @@ class Member extends ReadyResource {
         }
 
         if (this.closing) return
+
+        if (alwaysClient && !this.ref.alwaysClient) {
+          this.ref.alwaysClient = true
+          this.blind._swarm(this.ref)
+        }
       }
     }
 
-    if (!this.closing) {
-      this.ref.alwaysClient = alwaysClient
-      this.blind._swarm(this.ref)
+    if (alwaysClient) this._revertClientAfterFlush() // safe to do in bg
+  }
+
+  async _revertClientAfterFlush () {
+    try {
+      await this.blind.swarm.flush()
+    } catch {
+      return
     }
+    if (this.closing) return
+
+    this.ref.alwaysClient = false
+    this.blind._swarm(this.ref)
   }
 
   async _addRequest (value) {
