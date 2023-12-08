@@ -18,6 +18,7 @@ class TimeoutPromise {
     this.resolve = null
     this.timeout = null
     this.destroyed = false
+    this.suspended = false
 
     this._resolveBound = this._resolve.bind(this)
     this._ontimerBound = this._ontimer.bind(this)
@@ -26,22 +27,33 @@ class TimeoutPromise {
   wait () {
     if (this.destroyed) return Promise.resolve()
 
-    if (this.timeout) this._resolve()
+    if (this.resolve) this._resolve()
     return new Promise(this._ontimerBound)
+  }
+
+  suspend () {
+    this.suspended = true
+    if (this.timeout !== null) clearTimeout(this.timeout)
+    this.timeout = null
+  }
+
+  resume () {
+    this.suspended = false
+    if (this.resolve) this._resolve()
   }
 
   destroy () {
     this.destroyed = true
-    if (this.resolve) this._resolve(false)
+    if (this.resolve) this._resolve()
   }
 
   _ontimer (resolve) {
     this.resolve = resolve
-    this.timeout = setTimeout(this._resolveBound, this.ms)
+    if (!this.suspended) this.timeout = setTimeout(this._resolveBound, this.ms)
   }
 
   _resolve () {
-    clearTimeout(this.timeout)
+    if (this.timeout !== null) clearTimeout(this.timeout)
 
     const resolve = this.resolve
     this.timeout = null
@@ -58,10 +70,14 @@ class BlindPairing extends ReadyResource {
     this.swarm = swarm
     this.poll = poll
     this.active = new Map()
+    this.suspended = false
 
     this._onconnectionBound = this._onconnection.bind(this)
+    this._refreshBound = this.refresh.bind(this)
+    this._refreshing = null
 
     this.swarm.on('connection', this._onconnectionBound)
+    this.swarm.dht.on('network-change', this._refreshBound)
   }
 
   static Invite = Invite
@@ -82,6 +98,56 @@ class BlindPairing extends ReadyResource {
     return new CandidateRequest(invite, userData)
   }
 
+  async suspend () {
+    if (this.suspended) return
+    this.suspended = true
+
+    const all = []
+
+    for (const ref of this.active.values()) {
+      if (ref.candidate) all.push(ref.candidate._suspend())
+      if (ref.member) all.push(ref.member._suspend())
+    }
+
+    await Promise.allSettled(all)
+  }
+
+  resume () {
+    if (!this.suspended) return
+    this.suspended = false
+    this.refresh().catch(safetyCatch) // no need to wait for the refreshes
+  }
+
+  async refresh () {
+    if (this._refreshing) {
+      await this._refreshing
+      return
+    }
+
+    if (this.closing || this.suspended) return
+
+    const r = this._refreshing = this._refresh()
+
+    try {
+      await r
+    } finally {
+      if (r === this._refreshing) this._refreshing = null
+    }
+  }
+
+  async _refresh () {
+    if (this.closing || this.suspended) return
+
+    const all = []
+
+    for (const ref of this.active.values()) {
+      if (ref.candidate) all.push(ref.candidate.refresh())
+      if (ref.member) all.push(ref.member.refresh())
+    }
+
+    await Promise.allSettled(all)
+  }
+
   addMember (opts) {
     return new Member(this, opts)
   }
@@ -94,6 +160,7 @@ class BlindPairing extends ReadyResource {
 
   async _close () {
     this.swarm.removeListener('connection', this._onconnectionBound)
+    this.swarm.dht.removeListener('network-change', this._refreshBound)
 
     const all = []
 
@@ -239,6 +306,10 @@ class Member extends ReadyResource {
     this.ref = ref
     this.onadd = onadd
 
+    this._activeQuery = null
+    this._activePoll = null
+    this._closestNodes = null
+
     this.ready()
   }
 
@@ -253,10 +324,26 @@ class Member extends ReadyResource {
     this.pairing.catch(safetyCatch)
   }
 
+  _suspend () {
+    this.timeout.suspend()
+    return this._abort()
+  }
+
+  async _abort () {
+    if (this._activeQuery) this._activeQuery.destroy()
+    while (this._activePoll !== null) await this._activePoll
+  }
+
+  async refresh () {
+    await this._abort()
+    this.timeout.resume()
+  }
+
   async _close () {
     this.ref.member = null
     this.blind._gc(this.ref)
     this.timeout.destroy()
+    await this._abort()
 
     try {
       await this.pairing
@@ -267,7 +354,9 @@ class Member extends ReadyResource {
 
   async _run () {
     while (!this.closing) {
-      await this._poll()
+      this._activePoll = this._poll()
+      await this._activePoll
+      this._activePoll = null
       await this.timeout.wait()
     }
   }
@@ -276,28 +365,40 @@ class Member extends ReadyResource {
     const visited = new Set()
     let alwaysClient = false
 
-    for await (const data of this.dht.lookup(this.pairingDiscoveryKey)) {
-      if (this.closing) return
+    if (this._activeQuery) this._activeQuery.destroy()
 
-      for (const peer of data.peers) {
-        const id = b4a.toString(peer.publicKey, 'hex')
+    const query = this._activeQuery = this.dht.lookup(this.pairingDiscoveryKey, { closestNodes: this._closestNodes })
 
-        if (visited.has(id) || this.skip.get(id)) continue
-        visited.add(id)
+    try {
+      for await (const data of this._activeQuery) {
+        if (this.closing || this.blind.suspended) return
 
-        try {
-          if (await this._add(peer.publicKey, id)) alwaysClient = true
-        } catch (err) {
-          safetyCatch(err)
-        }
+        for (const peer of data.peers) {
+          const id = b4a.toString(peer.publicKey, 'hex')
 
-        if (this.closing) return
+          if (visited.has(id) || this.skip.get(id)) continue
+          visited.add(id)
 
-        if (alwaysClient && !this.ref.alwaysClient) {
-          this.ref.alwaysClient = true
-          this.blind._swarm(this.ref)
+          try {
+            if (await this._add(peer.publicKey, id)) alwaysClient = true
+          } catch (err) {
+            safetyCatch(err)
+          }
+
+          if (this.closing || this.blind.suspended) return
+
+          if (alwaysClient && !this.ref.alwaysClient) {
+            this.ref.alwaysClient = true
+            this.blind._swarm(this.ref)
+          }
         }
       }
+    } catch {
+      // do nothing
+    } finally {
+      const nodes = this._activeQuery.closestNodes
+      if (this._activeQuery === query) this._activeQuery = null
+      if (nodes && nodes.length > 0) this._closestNodes = nodes
     }
 
     if (alwaysClient) this._revertClientAfterFlush() // safe to do in bg
@@ -309,7 +410,7 @@ class Member extends ReadyResource {
     } catch {
       return
     }
-    if (this.closing) return
+    if (this.closing || this.blind.suspended) return
 
     this.ref.alwaysClient = false
     this.blind._swarm(this.ref)
@@ -378,25 +479,33 @@ class Candidate extends ReadyResource {
     this.pairing = null
     this.onadd = onadd
 
+    this._activePoll = null
+
     this.ready()
   }
 
   _open () {
     this.blind._swarm(this.ref)
     this.pairing = this._run()
-    this.pairing.catch(safetyCatch)
     this._broadcast()
+  }
+
+  _suspend () {
+    this.timeout.suspend()
+    // no good way to suspend the mut gets atm unfortunately so we just rely on the polls timing out
+  }
+
+  async refresh () {
+    while (this._activePoll !== null) await this._activePoll
+    this.announced = false
+    this.timeout.resume()
   }
 
   async _close () {
     this.ref.candidate = null
     this.blind._gc(this.ref)
     this.timeout.destroy()
-    try {
-      await this.pairing
-    } catch {
-      // ignore errors since we teardown
-    }
+    await this.pairing
     // gc never throws
     if (this.gcing) await this.gcing
   }
@@ -416,20 +525,10 @@ class Candidate extends ReadyResource {
 
   async _run () {
     while (!this._done()) {
-      const value = await this._poll()
+      this._activePoll = this._poll()
+      await this._activePoll
+      this._activePoll = null
       if (this._done()) break
-
-      if (value) {
-        await this._addResponse(value, true)
-        if (this._done()) break
-      }
-
-      if (!this.announced) {
-        this.announced = true
-        await this._announce()
-        if (this._done()) break
-      }
-
       await this.timeout.wait()
     }
 
@@ -448,6 +547,7 @@ class Candidate extends ReadyResource {
     if (this._done()) return
 
     await this.dht.announce(this.pairingDiscoveryKey, eph).finished()
+    if (this._done()) return
 
     if (!this.paired) {
       this.ref.alwaysServer = true
@@ -476,6 +576,25 @@ class Candidate extends ReadyResource {
   }
 
   async _poll () {
+    try {
+      const value = await this._getReply()
+      if (this._done() || this.blind.suspended) return
+
+      if (value) {
+        await this._addResponse(value, true)
+        if (this._done() || this.blind.suspended) return
+      }
+
+      if (!this.announced) {
+        this.announced = true
+        await this._announce()
+      }
+    } catch {
+      // can run in bg, should never crash it
+    }
+  }
+
+  async _getReply () {
     const { publicKey } = deriveReplyKeyPair(this.token)
     const node = await this.dht.mutableGet(publicKey, { latest: false })
     if (!node) return null
