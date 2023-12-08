@@ -17,6 +17,17 @@ const invite = args.invite && z32.decode(args.invite)
 if (cmd === 'member') onmember()
 else if (cmd === 'candidate') oncandidate()
 
+if (args.suspend) {
+  setTimeout(function () {
+    console.log('suspend!')
+    pairer.suspend()
+    setTimeout(function () {
+      console.log('resume!')
+      pairer.resume()
+    }, 4000)
+  }, 4000)
+}
+
 async function onmember () {
   const key = Buffer.alloc(32).fill(args.key || 'key')
   const inv = invite
