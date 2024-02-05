@@ -296,6 +296,8 @@ class Member extends ReadyResource {
 
     ref.member = this
 
+    this._pendingRequests = new Map()
+
     this.blind = blind
     this.dht = blind.swarm.dht
     this.discoveryKey = discoveryKey
@@ -426,16 +428,30 @@ class Member extends ReadyResource {
 
     request.discoveryKey = this.discoveryKey
 
+    const session = b4a.toString(request.requestData.session, 'hex')
+
+    if (!this._pendingRequests.has(session)) {
+      this._pendingRequests.set(session, {
+        request,
+        promise: this.onadd(request)
+      })
+    }
+
+    // laod existing request if it exists
+    const pending = this._pendingRequests.get(session)
+
     try {
-      await this.onadd(request)
+      await pending.promise
     } catch (e) {
       safetyCatch(e)
       return null
     }
 
-    if (!request.response) return null
+    this._pendingRequests.delete(session)
 
-    return request
+    if (!pending.request.response) return null
+
+    return pending.request
   }
 
   async _add (publicKey, id) {
