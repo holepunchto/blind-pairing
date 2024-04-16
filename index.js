@@ -174,7 +174,7 @@ class BlindPairing extends ReadyResource {
   }
 
   _randomPoll () {
-    return this.poll + (this.poll * 0.5 * Math.random()) | 0
+    return randomInterval(this.poll)
   }
 
   _add (discoveryKey) {
@@ -488,6 +488,7 @@ class Candidate extends ReadyResource {
     this.request = request
     this.token = request.token
     this.timeout = new TimeoutPromise(blind._randomPoll())
+    this.broadcasting = null
     this.announced = false
     this.gcing = null
     this.ref = ref
@@ -533,6 +534,7 @@ class Candidate extends ReadyResource {
     if (!paired) return
 
     this.paired = paired
+    if (this.broadcasting) this.broadcasting.destroy()
 
     if ((gc || this.announced) && !this.gcing) this.gcing = this._gc() // gc in the background
     await this.onadd(paired)
@@ -587,8 +589,33 @@ class Candidate extends ReadyResource {
     ch.messages[0].send(this.request.encode())
   }
 
-  _broadcast () {
-    for (const ch of this.ref.channels) this._sendRequest(ch)
+  async _broadcast () {
+    for await (const channel of this._closestPeers()) {
+      this._sendRequest(channel)
+      if (this.paired) break
+    }
+  }
+
+  async * _closestPeers () {
+    const visited = new Set()
+
+    while (!this.paired) {
+      this.broadcasting = new TimeoutPromise(randomInterval(1000))
+
+      const closest = Infinity
+      let channel = null
+
+      for (const ch of this.ref.channels) {
+        if (visited.has(ch)) continue
+
+        const { rtt } = ch._mux.stream.rawStream
+        if (rtt < closest) channel = ch
+      }
+
+      if (channel) yield channel
+
+      await this.broadcasting.wait()
+    }
   }
 
   async _poll () {
@@ -640,4 +667,8 @@ function getMuxer (stream) {
   stream.setKeepAlive(5000)
   stream.userData = protocol
   return protocol
+}
+
+function randomInterval (n) {
+  return n + (n * 0.5 * Math.random()) | 0
 }
