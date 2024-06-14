@@ -11,6 +11,7 @@ const isOptions = require('is-options')
 const [NS_EPHEMERAL, NS_REPLY, NS_DISCOVERY] = crypto.namespace('blind-pairing/dht', 3)
 
 const DEFAULT_POLL = 7 * 60 * 1000
+const PEER_INTERVAL = 1000
 
 class TimeoutPromise {
   constructor (ms) {
@@ -261,7 +262,8 @@ class BlindPairing extends ReadyResource {
     ch.open()
     mux.pair({ protocol: 'blind-pairing', id: discoveryKey }, () => this._attachToMuxer(mux, discoveryKey, null))
     ref.channels.add(ch)
-    if (ref.candidate) ref.candidate._sendRequest(ch)
+
+    if (ref.candidate && !ref.candidate.broadcasting) ref.candidate._sendRequest(ch)
   }
 
   async _onpairingrequest (ch, ref, req) {
@@ -600,7 +602,7 @@ class Candidate extends ReadyResource {
     const visited = new Set()
 
     while (!this.paired) {
-      this.broadcasting = new TimeoutPromise(randomInterval(1000))
+      this.broadcasting = new TimeoutPromise(randomInterval(PEER_INTERVAL))
 
       const closest = Infinity
       let channel = null
@@ -612,7 +614,10 @@ class Candidate extends ReadyResource {
         if (rtt < closest) channel = ch
       }
 
-      if (channel) yield channel
+      if (channel) {
+        visited.add(channel)
+        yield channel
+      }
 
       await this.broadcasting.wait()
     }
