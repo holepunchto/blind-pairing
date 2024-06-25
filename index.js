@@ -607,7 +607,7 @@ class Candidate extends ReadyResource {
 
       await this.signal.wait() // resolves on destroy
 
-      if (this.paired) break
+      if (this.paired || this.suspended) break
     }
   }
 
