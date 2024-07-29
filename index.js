@@ -6,11 +6,13 @@ const Xache = require('xache')
 const { MemberRequest, CandidateRequest, createInvite, decodeInvite, verifyReceipt, Invite } = require('@holepunchto/blind-pairing-core')
 const Protomux = require('protomux')
 const c = require('compact-encoding')
+const debounce = require('debounceify')
 const isOptions = require('is-options')
 
 const [NS_EPHEMERAL, NS_REPLY, NS_DISCOVERY] = crypto.namespace('blind-pairing/dht', 3)
 
 const DEFAULT_POLL = 7 * 60 * 1000
+const PEER_INTERVAL = 1000
 
 class TimeoutPromise {
   constructor (ms) {
@@ -20,15 +22,17 @@ class TimeoutPromise {
     this.destroyed = false
     this.suspended = false
 
+    this._promise = null
+
     this._resolveBound = this._resolve.bind(this)
     this._ontimerBound = this._ontimer.bind(this)
   }
 
   wait () {
     if (this.destroyed) return Promise.resolve()
+    if (this._promise === null) this._promise = new Promise(this._ontimerBound)
 
-    if (this.resolve) this._resolve()
-    return new Promise(this._ontimerBound)
+    return this._promise
   }
 
   suspend () {
@@ -174,7 +178,7 @@ class BlindPairing extends ReadyResource {
   }
 
   _randomPoll () {
-    return this.poll + (this.poll * 0.5 * Math.random()) | 0
+    return randomInterval(this.poll)
   }
 
   _add (discoveryKey) {
@@ -261,7 +265,8 @@ class BlindPairing extends ReadyResource {
     ch.open()
     mux.pair({ protocol: 'blind-pairing', id: discoveryKey }, () => this._attachToMuxer(mux, discoveryKey, null))
     ref.channels.add(ch)
-    if (ref.candidate) ref.candidate._sendRequest(ch)
+
+    if (ref.candidate) ref.candidate.broadcast()
   }
 
   async _onpairingrequest (ch, ref, req) {
@@ -495,6 +500,10 @@ class Candidate extends ReadyResource {
     this.pairing = null
     this.onadd = onadd
 
+    this.signal = null
+    this.visited = new Set()
+    this.broadcast = debounce(this._broadcast.bind(this))
+
     this._activePoll = null
 
     this.ready()
@@ -508,6 +517,7 @@ class Candidate extends ReadyResource {
 
   _suspend () {
     this.timeout.suspend()
+    this.visited.clear()
     // no good way to suspend the mut gets atm unfortunately so we just rely on the polls timing out
   }
 
@@ -521,6 +531,7 @@ class Candidate extends ReadyResource {
     this.ref.candidate = null
     this.blind._gc(this.ref)
     this.timeout.destroy()
+    this.visited.clear()
     await this.pairing
     // gc never throws
     if (this.gcing) await this.gcing
@@ -533,6 +544,7 @@ class Candidate extends ReadyResource {
     if (!paired) return
 
     this.paired = paired
+    if (this.signal) this.signal.destroy()
 
     if ((gc || this.announced) && !this.gcing) this.gcing = this._gc() // gc in the background
     await this.onadd(paired)
@@ -585,10 +597,36 @@ class Candidate extends ReadyResource {
 
   _sendRequest (ch) {
     ch.messages[0].send(this.request.encode())
+    this.visited.add(ch)
   }
 
-  _broadcast () {
-    for (const ch of this.ref.channels) this._sendRequest(ch)
+  async _broadcast () {
+    for (const channel of this.closestPeers()) {
+      this.signal = new TimeoutPromise(randomInterval(PEER_INTERVAL))
+      if (channel) this._sendRequest(channel)
+
+      await this.signal.wait() // resolves on destroy
+
+      if (this.paired || this.suspended) break
+    }
+  }
+
+  * closestPeers () {
+    while (!this.paired) {
+      const closest = Infinity
+      let channel = null
+
+      for (const ch of this.ref.channels) {
+        if (this.visited.has(ch)) continue
+
+        const { rtt } = ch._mux.stream.rawStream
+        if (rtt < closest) channel = ch
+      }
+
+      if (!channel) return
+
+      yield channel
+    }
   }
 
   async _poll () {
@@ -640,4 +678,8 @@ function getMuxer (stream) {
   stream.setKeepAlive(5000)
   stream.userData = protocol
   return protocol
+}
+
+function randomInterval (n) {
+  return n + (n * 0.5 * Math.random()) | 0
 }

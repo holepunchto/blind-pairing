@@ -9,6 +9,7 @@
   "dependencies": {
     "@holepunchto/blind-pairing-core": "^2.0.0",
     "b4a": "^1.6.4",
+    "debounceify": "^1.1.0",
     "hypercore-crypto": "^3.4.0",
     "is-options": "^1.0.2",
     "ready-resource": "^1.0.0",
@@ -16,6 +17,7 @@
     "xache": "^1.2.0"
   },
   "devDependencies": {
+    "@hyperswarm/testnet": "^3.1.4",
     "brittle": "^3.3.2",
     "hyperdht": "^6.8.9",
     "hyperswarm": "^4.7.3",
