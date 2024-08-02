@@ -257,6 +257,7 @@ class BlindPairing extends ReadyResource {
       ],
       onclose: () => {
         ref.channels.delete(ch)
+        if (ref.candidate) ref.candidate.visited.delete(ch)
       }
     })
 
@@ -517,7 +518,6 @@ class Candidate extends ReadyResource {
 
   _suspend () {
     this.timeout.suspend()
-    this.visited.clear()
     // no good way to suspend the mut gets atm unfortunately so we just rely on the polls timing out
   }
 
