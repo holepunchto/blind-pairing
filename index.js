@@ -65,7 +65,7 @@ class TimeoutPromise {
 }
 
 class BlindPairing extends ReadyResource {
-  constructor (swarm, { poll = DEFAULT_POLL } = {}) {
+  constructor (swarm, { poll = DEFAULT_POLL, onincoming = noop } = {}) {
     super()
 
     this.swarm = swarm
@@ -73,6 +73,7 @@ class BlindPairing extends ReadyResource {
     this.active = new Map()
     this.suspended = false
 
+    this._onincoming = onincoming
     this._onconnectionBound = this._onconnection.bind(this)
     this._refreshBound = this.refresh.bind(this)
     this._refreshing = null
@@ -165,6 +166,12 @@ class BlindPairing extends ReadyResource {
 
     const all = []
 
+    for (const conn of this.swarm.connections) {
+      const mux = getMuxer(conn)
+      mux.unpair({ protocol: 'blind-pairing' })
+      for (const ref of this.active.values()) mux.unpair({ protocol: 'blind-pairing', id: ref.discoveryKey })
+    }
+
     for (const ref of this.active.values()) {
       if (ref.member) all.push(ref.member.close())
       if (ref.candidate) all.push(ref.candidate.close())
@@ -236,6 +243,8 @@ class BlindPairing extends ReadyResource {
 
   _onconnection (conn) {
     const mux = getMuxer(conn)
+
+    mux.pair({ protocol: 'blind-pairing' }, this._onincoming)
 
     for (const ref of this.active.values()) {
       this._attachToMuxer(mux, ref.discoveryKey, ref)
