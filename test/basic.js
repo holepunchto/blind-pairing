@@ -81,7 +81,7 @@ test('basic - multiple request', async t => {
     invite,
     userData: userData1,
     async onadd (response) {
-      t.alike(response.key, key)
+      t.alike(response.key, key, 'b candidate')
     }
   })
 
@@ -89,13 +89,13 @@ test('basic - multiple request', async t => {
     invite,
     userData: userData2,
     async onadd (response) {
-      t.alike(response.key, key)
+      t.alike(response.key, key, 'a candidate')
     }
   })
 })
 
 test('basic - multiple members', async t => {
-  t.plan(2)
+  t.plan(3)
 
   const testnet = await createTestnet()
   const bootstrap = testnet.bootstrap
@@ -114,6 +114,7 @@ test('basic - multiple members', async t => {
   const member1 = a.addMember({
     discoveryKey,
     async onadd (candidate) {
+      t.pass('add member got request')
       added++
       candidate.open(publicKey)
       candidate.confirm({ key })
@@ -123,6 +124,7 @@ test('basic - multiple members', async t => {
   const member2 = b.addMember({
     discoveryKey,
     async onadd (candidate) {
+      t.pass('add member got request')
       added++
       candidate.open(publicKey)
       candidate.confirm({ key })
