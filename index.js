@@ -219,7 +219,10 @@ class BlindPairing extends ReadyResource {
     if (!server && !client) return
 
     ref.discovery = this.swarm.join(ref.discoveryKey, { server, client })
+    this._attachToSwarm(ref)
+  }
 
+  _attachToSwarm (ref) {
     for (const conn of this.swarm.connections) {
       const mux = getMuxer(conn)
       this._attachToMuxer(mux, ref.discoveryKey, ref)
@@ -293,7 +296,7 @@ class BlindPairing extends ReadyResource {
 }
 
 class Member extends ReadyResource {
-  constructor (blind, { discoveryKey, onadd = noop } = {}) {
+  constructor (blind, { announce = true, discoveryKey, onadd = noop } = {}) {
     super()
 
     if (!discoveryKey) {
@@ -323,8 +326,19 @@ class Member extends ReadyResource {
     this._activeQuery = null
     this._activePoll = null
     this._closestNodes = null
+    this._autoAnnounce = announce
 
     this.ready()
+  }
+
+  announce () {
+    if (this.pairing) return this.pairing
+
+    this.blind._swarm(this.ref)
+    this.pairing = this._run()
+    this.pairing.catch(safetyCatch)
+
+    return this.pairing
   }
 
   async flushed () {
@@ -333,9 +347,8 @@ class Member extends ReadyResource {
   }
 
   _open () {
-    this.blind._swarm(this.ref)
-    this.pairing = this._run()
-    this.pairing.catch(safetyCatch)
+    if (this._autoAnnounce) this.announce()
+    else this.blind._attachToSwarm(this.ref)
   }
 
   _suspend () {
