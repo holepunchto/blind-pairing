@@ -3,7 +3,7 @@
 Blind pairing over HyperDHT
 
 ```
-npm install @holepunchto/blind-pairing
+npm install blind-pairing
 ```
 
 ## Usage

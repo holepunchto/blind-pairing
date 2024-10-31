@@ -1,5 +1,5 @@
 const Hyperswarm = require('hyperswarm')
-const BlindPairing = require('@holepunchto/blind-pairing')
+const BlindPairing = require('blind-pairing')
 const z32 = require('z32')
 const minimist = require('minimist')
 const args = minimist(process.argv.slice(2), { alias: { invite: 'i', key: 'k', 'user-data': 'u' } })
