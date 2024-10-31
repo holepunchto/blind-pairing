@@ -1,5 +1,5 @@
 {
-  "name": "@holepunchto/blind-pairing",
+  "name": "blind-pairing",
   "version": "2.3.0",
   "description": "Blind pairing using Hyperswarm",
   "main": "index.js",
@@ -7,7 +7,7 @@
     "index.js"
   ],
   "dependencies": {
-    "@holepunchto/blind-pairing-core": "^2.0.0",
+    "blind-pairing-core": "^2.0.0",
     "b4a": "^1.6.4",
     "debounceify": "^1.1.0",
     "hypercore-crypto": "^3.4.0",
