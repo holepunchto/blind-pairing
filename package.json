@@ -1,6 +1,6 @@
 {
   "name": "blind-pairing",
-  "version": "2.3.0",
+  "version": "2.3.1",
   "description": "Blind pairing using Hyperswarm",
   "main": "index.js",
   "files": [
