@@ -1,5 +1,5 @@
 const Hyperswarm = require('hyperswarm')
-const createTestnet = require('@hyperswarm/testnet')
+const createTestnet = require('hyperdht/testnet')
 const test = require('brittle')
 const BlindPairing = require('../index.js')
 
