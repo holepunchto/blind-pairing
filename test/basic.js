@@ -198,6 +198,69 @@ test('basic - multiple members, one is slow', async t => {
   }, 10000)
 })
 
+test('basic - can use dht only', async t => {
+  t.plan(6)
+
+  const testnet = await createTestnet(3)
+  const bootstrap = testnet.bootstrap
+  const key = Buffer.alloc(32).fill('the-autobase-key')
+
+  t.teardown(() => testnet.destroy())
+
+  const [b] = create(1, t, { bootstrap })
+
+  await b.ready()
+
+  const { invite, publicKey, id, discoveryKey } = BlindPairing.createInvite(key)
+  const userData = Buffer.alloc(32).fill('i am a candidate')
+
+  const candidate = b.addCandidate({
+    invite,
+    userData,
+    onadd (response) {
+      t.fail('initial candidate request should never get response')
+    }
+  })
+
+  await candidate.ready()
+
+  await new Promise((resolve) => candidate.on('announce', resolve))
+  await candidate.close() // Take candidate peer offline
+
+  const [a] = create(1, t, { bootstrap })
+  await a.ready()
+  const member = a.addMember({
+    discoveryKey,
+    onadd (request) {
+      request.open(publicKey)
+
+      t.alike(request.inviteId, id)
+      t.alike(request.publicKey, publicKey)
+      t.alike(request.userData, userData)
+      t.absent(request.response)
+
+      request.confirm({ key })
+
+      t.ok(request.response)
+    }
+  })
+
+  await member.ready()
+  await member.flushed() // Ensure response is in DHT
+  await member.close() // Take member offline
+
+  // Bring candidate back online
+  const candidate2 = b.addCandidate({
+    invite,
+    userData,
+    onadd (response) {
+      t.alike(response.key, key)
+    }
+  })
+
+  await candidate2.ready()
+})
+
 function createPairing (t, { bootstrap, poll } = {}) {
   const swarm = new Hyperswarm({ bootstrap })
   const pairing = new BlindPairing(swarm, { poll })
