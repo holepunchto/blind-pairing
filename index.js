@@ -632,14 +632,17 @@ class Candidate extends ReadyResource {
 
   * closestPeers () {
     while (!this.paired) {
-      const closest = Infinity
+      let closest = Infinity
       let channel = null
 
       for (const ch of this.ref.channels) {
         if (this.visited.has(ch)) continue
 
-        const { rtt } = ch._mux.stream.rawStream
-        if (rtt < closest) channel = ch
+        const rtt = ch._mux.stream.rawStream?.rtt ?? 0 // a relayed stream (e.g. dht-relay in browsers) has no rtt
+        if (rtt < closest) {
+          closest = rtt
+          channel = ch
+        }
       }
 
       if (!channel) return
